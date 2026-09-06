@@ -78,6 +78,10 @@ npm run dev:frontend  # http://localhost:5173
 
 ## Google OAuth domain restriction
 
+_Verified working end-to-end (2026-09-07) — real Google sign-in against the
+`kinbidhooschool.edu.mv` Workspace domain, landing correctly on the linked
+staff record. Steps below for reference / setting it up again elsewhere._
+
 1. In [Google Cloud Console](https://console.cloud.google.com/), create an
    OAuth 2.0 Client ID (type: Web application) under your Workspace org's
    project.
@@ -176,10 +180,6 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
 - **Hosting hasn't been chosen** — see `docs/DEPLOY.md` before deploying;
   the backend needs a host that runs a persistent Node process (it isn't a
   drop-in fit for plain serverless functions).
-- **Real Google OAuth hasn't been tested** — only `DEV_BYPASS_AUTH` login has
-  been exercised. Wire up real Google Cloud OAuth credentials and test a
-  login from an actual `@kinbidhooschool.edu.mv` account before relying on
-  the domain-restriction check in production.
 - **No legacy v7.0 data migration script** — the schema is designed to
   receive migrated staff/overtime/leave history, but no ETL exists; it needs
   the actual v7.0 export format.

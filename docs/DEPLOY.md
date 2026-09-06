@@ -89,7 +89,7 @@ on this decision (see `.claude/deploy-queue.md`).
 | `DIRECT_URL` | Postgres connection string (session-mode, for migrations) | `backend/.env` (local); same Supabase page |
 | `JWT_SECRET` | Session JWT signing key (HS256, ≥32 chars) | *(TBD)* |
 | `ENCRYPTION_KEY` | AES-256-GCM key for national ID / bank / salary fields | *(TBD — treat as a crown jewel; back up separately from the app's own secrets store)* |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth app credentials | *(TBD — Google Cloud Console project)* |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth app credentials | `backend/.env` (local); source of truth is the "Kinbidhoo HR Portal" project in Google Cloud Console → APIs & Services → Credentials. Only the local dev redirect URI is registered so far — add the prod callback URL there once hosting is chosen. |
 | `ALLOWED_GOOGLE_DOMAIN` | Workspace domain restriction (not secret, but must match prod) | *(TBD)* |
 | `SMTP_*` | Optional email notifications | *(TBD, if used)* |
 | `DEV_BYPASS_AUTH` | **Must be unset/false in every non-development environment** | N/A — verify absent from prod env, not just "set to false" |
@@ -253,6 +253,29 @@ calls out as PDF/CSV: `GET /api/attendance/timesheet?format=pdf` and
 `GET /api/overtime/summary?format=pdf`, with matching "Export PDF" links
 in the UI. Verified by generating real PDFs against live data and visually
 inspecting them (correct table, correct totals row).
+
+## Session log: real Google OAuth (2026-09-07)
+
+The user created a real OAuth client ("Kinbidhoo HR Portal" project) in
+Google Cloud Console under the `kinbidhooschool.edu.mv` Workspace org via
+the newer "Google Auth Platform" consent-screen wizard, and registered the
+local dev redirect URI (`http://localhost:4000/api/auth/google/callback`).
+Credentials were set in `backend/.env`; confirmed correct by inspecting the
+actual `/api/auth/google` redirect (`hd` claim, redirect_uri, state param,
+and client_id all correct) before any real login was attempted.
+
+Since there's no self-registration by design, the seeded staff googleEmail
+values are placeholders that aren't real Google accounts — so the user's
+real account (`lassan@kinbidhooschool.edu.mv`) was linked to the KS-0001
+(HR_ADMIN) staff record for this test via a direct DB update. The user
+then completed a real Google sign-in end to end and confirmed landing on
+the dashboard correctly authenticated as that staff record — the full
+production auth path (not `DEV_BYPASS_AUTH`) is now confirmed working
+against the live database.
+
+**Operational note for onboarding real staff:** every staff member's
+`googleEmail` field must be set to their actual Google Workspace address
+before they can log in — there is no self-service way to link an account.
 
 ## Known residual findings from security review (not yet remediated)
 

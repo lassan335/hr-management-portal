@@ -114,11 +114,21 @@ table, correct totals row, correct decrypted/derived values. Frontend has
 "Export PDF" links next to "Export CSV" on the Attendance and Overtime
 pages.
 
+## GOOGLE OAUTH: LIVE (2026-09-07)
+
+Real OAuth client created in Google Cloud Console under the
+`kinbidhooschool.edu.mv` Workspace org, credentials set in `backend/.env`
+(`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, gitignored — see
+`docs/DEPLOY.md`'s credential inventory). Verified end-to-end: a real
+Google account (`lassan@kinbidhooschool.edu.mv`, linked to the KS-0001
+HR_ADMIN staff record for this test) completed the full sign-in flow and
+landed correctly authenticated. Confirms the server-side domain check,
+JWT issuance, and staff-record lookup all work against a real (not
+dev-bypass) login. Redirect URI registered: only the local dev callback so
+far — add the production callback URL once hosting is chosen.
+
 ## NOT YET BUILT / KNOWN GAPS
 
-- **Real Google OAuth untested** — only `DEV_BYPASS_AUTH` login has been
-  exercised against the live DB. Needs real Workspace credentials + a login
-  test before relying on the domain-restriction check in production.
 - **Hosting** — not chosen; `docs/DEPLOY.md` is explicit that this blocks any
   real deploy and spells out the persistent-process/ephemeral-disk
   constraints on the backend.

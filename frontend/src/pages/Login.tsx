@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, googleLoginUrl } from "../lib/api";
 import { useAuth } from "../lib/AuthContext";
 import logo from "../assets/kinbidhoo-school-logo.png";
@@ -6,9 +7,18 @@ import logo from "../assets/kinbidhoo-school-logo.png";
 const DEV_BYPASS_ENABLED = import.meta.env.DEV;
 
 export function Login() {
-  const { refresh } = useAuth();
+  const { user, refresh } = useAuth();
+  const navigate = useNavigate();
   const [staffId, setStaffId] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // The Google OAuth path redirects here via a full page navigation to "/"
+  // from the backend, so it never needs this — but dev-login is a plain
+  // fetch() with no navigation of its own, and landing on /login while
+  // already authenticated (e.g. a stale tab) should also bounce to the app.
+  useEffect(() => {
+    if (user) navigate("/", { replace: true });
+  }, [user, navigate]);
 
   async function handleDevLogin(e: React.FormEvent) {
     e.preventDefault();

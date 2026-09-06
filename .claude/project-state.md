@@ -89,15 +89,27 @@ details and the two real bugs this caught (ZKTime matching only checked
 strings live in `backend/.env` (gitignored) — see `docs/DEPLOY.md`'s
 credential inventory for where to find them again.
 
+## FRONTEND: BROWSER-VERIFIED (2026-09-06)
+
+Drove the actual React app in headless Chromium (Playwright) against the
+live database — login (HR_ADMIN and STAFF), navigation across all four
+modules, and role-based rendering (decrypted bank/national-ID fields for
+HR, correctly hidden for STAFF; STAFF sees own profile only, not the
+directory). Found and fixed two real bugs neither `tsc` nor the security
+reviews could catch: `shared`'s CommonJS-only build crashed the entire
+frontend under Vite's dev-mode ESM serving (now dual CJS/ESM build), and
+dev-bypass login never redirected away from `/login` after succeeding. Also
+tightened `authenticate()` to stop misreporting a transient DB error as a
+401 "invalid session" instead of a visible 500. Full write-up, including an
+investigated-but-confirmed-non-issue (StrictMode dev-only double-fetch
+racing a fast automated logout), is in `docs/DEPLOY.md`'s session log.
+
 ## NOT YET BUILT / KNOWN GAPS
 
 - **PDF export** — CSV only for timesheets/overtime summaries so far.
 - **Real Google OAuth untested** — only `DEV_BYPASS_AUTH` login has been
   exercised against the live DB. Needs real Workspace credentials + a login
   test before relying on the domain-restriction check in production.
-- **Frontend UI flows unclicked** — all live-DB verification so far was via
-  curl against the API directly; the React pages themselves haven't been
-  driven in a browser against the live database yet.
 - **Hosting** — not chosen; `docs/DEPLOY.md` is explicit that this blocks any
   real deploy and spells out the persistent-process/ephemeral-disk
   constraints on the backend.

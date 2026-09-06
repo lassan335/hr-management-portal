@@ -160,6 +160,65 @@ overtime requests' dates, so the demo showed a null rate/cost for "no rate
 in effect yet" even though that's correct app behavior for the seed
 timing, not a bug.
 
+## Session log: first real-browser verification (2026-09-06)
+
+Everything above this point was verified via `curl` against the API
+directly. This pass drove the actual React frontend in headless Chromium
+(Playwright) against the live Supabase database for the first time — login,
+navigation, and data rendering across all four modules, as both an
+HR_ADMIN and a STAFF user.
+
+Two more real bugs surfaced, both in frontend code neither the backend
+security reviews nor `tsc` could have caught:
+
+1. **The whole app failed to load** — `shared`'s build was CommonJS-only
+   (`tsc` with `module: CommonJS`), but Vite serves an npm-workspace-linked
+   package as raw ES module source in dev rather than pre-bundling it, and
+   a CJS file's `exports.X = ...` assignments aren't visible as named ESM
+   exports to a raw `import { Role } from "@hr/shared"`. Every page crashed
+   with `does not provide an export named 'Role'` before rendering anything.
+   Fixed with a dual CJS/ESM build (`shared/tsconfig.esm.json` +
+   `package.json`'s `exports` map: `require` → CJS for the Node/tsx backend,
+   `import` → ESM for Vite/the frontend).
+2. **Dev-bypass login never navigated anywhere** — `Login.tsx`'s dev-login
+   handler called the API and refreshed auth state, but nothing redirected
+   away from `/login` afterward (the Google OAuth path is unaffected since
+   the backend does a full-page redirect on that path). A user would
+   successfully authenticate and then keep staring at the login form. Fixed
+   by redirecting to `/` whenever `AuthContext`'s `user` becomes truthy
+   while on the login page.
+
+Also tightened `lib/auth.ts`'s `authenticate()` middleware: it previously
+wrapped the JWT verification AND the subsequent DB session-check in one
+try/catch, so a transient database error during the DB check was
+misreported as `401 invalid_session` (looks like "your session expired")
+instead of surfacing as a real `500` (visible in logs, distinguishable from
+an actual auth problem). JWT verification failure is still a clean 401; a
+DB error during the session check now propagates to `errorHandler` instead.
+
+**Investigated but NOT a bug:** intermittent `401 invalid_session` responses
+were observed on `/api/leave`, `/api/overtime`, etc. during rapid automated
+clicking, traced via added-then-removed debug logging to React 19
+StrictMode's dev-only double-invocation of data-fetching `useEffect`s (no
+`AbortController` cleanup on any of them). Under real network latency to
+Supabase (~250–800ms/query from this environment), the second, redundant
+invocation's fetch can still be in flight when a fast script (not a real
+human) immediately clicks "Sign out" afterward, so it lands with an
+already-invalidated cookie — a duplicate, harmless request racing a session
+teardown that a real user's pace would never trigger. Confirmed via direct
+`curl` calls that the underlying data and endpoints are correct throughout
+(e.g. the overtime dashboard/list this had made look "empty" in a
+screenshot returned full, correct data seconds later via `curl`). This
+double-invocation is dev-only — production React does not do it — so it
+does not reproduce in a production build. Left as a minor follow-up: adding
+`AbortController` cleanup to data-fetching effects would eliminate the
+console noise, but has no functional impact on any real user.
+
+Screenshots from this pass (HR dashboard, staff directory, staff detail
+with decrypted bank/national-ID fields, attendance dashboard, a STAFF
+user's own restricted profile view) were sent to the user directly rather
+than committed to the repo.
+
 ## Known residual findings from security review (not yet remediated)
 
 Tracked here so they aren't lost before a first real deploy — see

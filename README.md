@@ -185,10 +185,11 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
 - **No legacy v7.0 data migration script** — the schema is designed to
   receive migrated staff/overtime/leave history, but no ETL exists; it needs
   the actual v7.0 export format.
-- Migrations, seeding, and core flows (login, encrypted-field round-trip,
-  RBAC boundaries, the ZKTime import + unmatched-device review, the
-  self-review approval guard) have been run end-to-end against a real
-  Supabase Postgres database — see `docs/DEPLOY.md`'s session log for what
-  was checked and two real bugs it caught. Frontend UI flows and the
-  overtime/leave approval chains in the browser (as opposed to via curl)
-  haven't been clicked through yet.
+- Migrations, seeding, core API flows, and the actual React frontend (driven
+  in a real browser via Playwright) have all been run end-to-end against a
+  real Supabase Postgres database, as both an HR_ADMIN and a STAFF user —
+  see `docs/DEPLOY.md`'s session logs for what was checked and the four real
+  bugs this process caught (all fixed). The one remaining unclicked path is
+  the overtime/leave approve/reject buttons themselves in the browser
+  (submission and the API-level approval chain are both verified; only the
+  button click hasn't been driven end-to-end in the UI).

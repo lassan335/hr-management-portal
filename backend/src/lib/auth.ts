@@ -248,23 +248,29 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   const token = req.cookies?.[SESSION_COOKIE];
   if (!token) return res.status(401).json({ error: "unauthenticated" });
 
+  // JWT verification failure is a genuine 401 (missing/expired/forged token).
+  let payload: AuthUser;
   try {
-    const payload = jwt.verify(token, env.jwtSecret, { algorithms: [JWT_ALGORITHM] }) as AuthUser;
-
-    // Re-check current status/session-version on every request — a pure JWT
-    // check alone would keep a terminated/suspended staff member's old token
-    // valid for up to JWT_EXPIRES_IN after they're revoked.
-    const staff = await prisma.staff.findUnique({
-      where: { id: payload.staffId },
-      select: { status: true, sessionVersion: true },
-    });
-    if (!staff || staff.status !== "ACTIVE" || staff.sessionVersion !== payload.sessionVersion) {
-      return res.status(401).json({ error: "invalid_session" });
-    }
-
-    req.user = payload;
-    next();
+    payload = jwt.verify(token, env.jwtSecret, { algorithms: [JWT_ALGORITHM] }) as AuthUser;
   } catch {
     return res.status(401).json({ error: "invalid_session" });
   }
+
+  // Re-check current status/session-version on every request — a pure JWT
+  // check alone would keep a terminated/suspended staff member's old token
+  // valid for up to JWT_EXPIRES_IN after they're revoked. A transient DB
+  // error here is NOT a session problem — let it propagate to errorHandler
+  // as a 500 (visible, logged) instead of masquerading as "please log in
+  // again," which would hide a real infrastructure issue behind a
+  // misleading auth error.
+  const staff = await prisma.staff.findUnique({
+    where: { id: payload.staffId },
+    select: { status: true, sessionVersion: true },
+  });
+  if (!staff || staff.status !== "ACTIVE" || staff.sessionVersion !== payload.sessionVersion) {
+    return res.status(401).json({ error: "invalid_session" });
+  }
+
+  req.user = payload;
+  next();
 }

@@ -23,7 +23,7 @@ export const summaryQuerySchema = z.object({
   staffId: z.string().optional(),
   month: z.coerce.number().int().min(1).max(12),
   year: z.coerce.number().int().min(2000),
-  format: z.enum(["json", "csv"]).optional(),
+  format: z.enum(["json", "csv", "pdf"]).optional(),
 });
 
 export const dashboardQuerySchema = z.object({

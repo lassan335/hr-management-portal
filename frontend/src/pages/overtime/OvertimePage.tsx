@@ -106,7 +106,10 @@ function MonthlySummaryCard({ month, year }: { month: number; year: number }) {
     <div className="bg-white border border-slate-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-medium text-slate-700">Monthly Summary</h2>
-        <a href={overtimeApi.summaryCsvUrl(month, year)} className="text-xs text-brand-600 hover:underline">Export CSV</a>
+        <span className="space-x-3">
+          <a href={overtimeApi.summaryCsvUrl(month, year)} className="text-xs text-brand-600 hover:underline">Export CSV</a>
+          <a href={overtimeApi.summaryPdfUrl(month, year)} className="text-xs text-brand-600 hover:underline">Export PDF</a>
+        </span>
       </div>
       {summary && (
         <>

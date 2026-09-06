@@ -9,7 +9,7 @@ export const timesheetQuerySchema = z.object({
   staffId: z.string().optional(),
   from: z.coerce.date(),
   to: z.coerce.date(),
-  format: z.enum(["json", "csv"]).optional(),
+  format: z.enum(["json", "csv", "pdf"]).optional(),
 });
 
 export const dashboardQuerySchema = z.object({

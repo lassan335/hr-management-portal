@@ -76,7 +76,10 @@ function MyTimesheet({ from, to }: { from: string; to: string }) {
     <div className="bg-white border border-slate-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-medium text-slate-700">My Timesheet</h2>
-        <a href={attendanceApi.timesheetCsvUrl(from, to)} className="text-xs text-brand-600 hover:underline">Export CSV</a>
+        <span className="space-x-3">
+          <a href={attendanceApi.timesheetCsvUrl(from, to)} className="text-xs text-brand-600 hover:underline">Export CSV</a>
+          <a href={attendanceApi.timesheetPdfUrl(from, to)} className="text-xs text-brand-600 hover:underline">Export PDF</a>
+        </span>
       </div>
       <TimesheetTable days={days} />
     </div>

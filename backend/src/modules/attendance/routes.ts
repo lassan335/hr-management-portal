@@ -77,6 +77,12 @@ export function attendanceRouter(): Router {
         res.setHeader("Content-Disposition", 'attachment; filename="timesheet.csv"');
         return res.send(csv);
       }
+      if (query.format === "pdf") {
+        const pdf = await service.exportTimesheetPdf(req.user!, query.staffId, query.from, query.to);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", 'attachment; filename="timesheet.pdf"');
+        return res.send(pdf);
+      }
       res.json(await service.getTimesheet(req.user!, query.staffId, query.from, query.to));
     })
   );

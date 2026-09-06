@@ -173,8 +173,6 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
 
 ## Known limitations
 
-- **PDF export** isn't implemented yet — timesheet/overtime-summary exports
-  are CSV only for now.
 - **Hosting hasn't been chosen** — see `docs/DEPLOY.md` before deploying;
   the backend needs a host that runs a persistent Node process (it isn't a
   drop-in fit for plain serverless functions).
@@ -187,9 +185,9 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
   the actual v7.0 export format.
 - Migrations, seeding, core API flows, and the actual React frontend (driven
   in a real browser via Playwright) have all been run end-to-end against a
-  real Supabase Postgres database, as both an HR_ADMIN and a STAFF user —
-  see `docs/DEPLOY.md`'s session logs for what was checked and the four real
-  bugs this process caught (all fixed). The one remaining unclicked path is
-  the overtime/leave approve/reject buttons themselves in the browser
-  (submission and the API-level approval chain are both verified; only the
-  button click hasn't been driven end-to-end in the UI).
+  real Supabase Postgres database, as HR_ADMIN, HOD, and STAFF users — login,
+  navigation, decrypted-field rendering, role restrictions, and both the
+  two-stage HOD→HR overtime approval chain and the HR-fast-track leave
+  approval (including the resulting leave-balance deduction) were driven by
+  actual button clicks, not just API calls. See `docs/DEPLOY.md`'s session
+  logs for the five real bugs this process caught (all fixed).

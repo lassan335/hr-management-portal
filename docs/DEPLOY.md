@@ -219,6 +219,41 @@ with decrypted bank/national-ID fields, attendance dashboard, a STAFF
 user's own restricted profile view) were sent to the user directly rather
 than committed to the repo.
 
+## Session log: approval-chain click-through + PDF export (2026-09-07)
+
+Closed the one remaining unclicked path from the prior session: drove the
+actual Approve buttons in the browser (not just API calls) through both
+approval patterns —
+
+- **Two-stage chain:** logged in as the Mathematics HOD (KS-0002), clicked
+  Approve on Ahmed Rasheed's overtime request (moves `PENDING_HOD` →
+  `PENDING_HR`), then logged in as HR_ADMIN and clicked Approve again for
+  the final sign-off. Confirmed in the database afterward: `hodReviewerId`
+  and `hrReviewerId` are two different people with sequential timestamps,
+  status `APPROVED`.
+- **HR fast-track:** the Languages department has no HOD in the seed data,
+  so HR_ADMIN approving Hussain Waheed's sick-leave request at the
+  `PENDING_HOD` stage should jump straight to `APPROVED` per
+  `approvalChain.ts`'s fast-track rule. Confirmed both `hodReviewerId` and
+  `hrReviewerId` are recorded as the same HR_ADMIN, and — the part that
+  actually matters — his Sick leave balance was correctly decremented
+  12 → 10 days (2 inclusive days, Sep 9–10).
+
+No new bugs found; this exercised code paths already covered by the T-020–
+022 finsec-analyst review and the earlier API-level approval-chain checks,
+just via real clicks instead of `curl`/`fetch`. (Screenshots taken during
+this pass again showed the pending list rendering "None." at the moment of
+capture before the click succeeded — the same benign StrictMode
+double-fetch timing artifact already documented above; the clicks
+themselves worked immediately, confirmed both by Playwright's auto-waiting
+succeeding and by the database state after.)
+
+Also added PDF export (`lib/pdf.ts`, pdfkit) for the two exports the spec
+calls out as PDF/CSV: `GET /api/attendance/timesheet?format=pdf` and
+`GET /api/overtime/summary?format=pdf`, with matching "Export PDF" links
+in the UI. Verified by generating real PDFs against live data and visually
+inspecting them (correct table, correct totals row).
+
 ## Known residual findings from security review (not yet remediated)
 
 Tracked here so they aren't lost before a first real deploy — see

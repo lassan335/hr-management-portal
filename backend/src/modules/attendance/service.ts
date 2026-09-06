@@ -8,6 +8,7 @@ import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
 import { endOfUtcDay } from "../../lib/dateRange";
+import { buildTablePdf } from "../../lib/pdf";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
 import { buildTimesheet } from "./timesheet";
 import type { correctionSchema } from "./validation";
@@ -58,6 +59,42 @@ export async function exportTimesheetCsv(requester: AuthUser, requestedStaffId: 
       .join(",")
   );
   return [header, ...rows].join("\n");
+}
+
+export async function exportTimesheetPdf(
+  requester: AuthUser,
+  requestedStaffId: string | undefined,
+  from: Date,
+  to: Date
+): Promise<Buffer> {
+  const staffId = await resolveTargetStaffId(requester, requestedStaffId);
+  const staff = await prisma.staff.findUnique({ where: { id: staffId }, select: { fullName: true, staffId: true } });
+  const days = await getTimesheet(requester, requestedStaffId, from, to);
+
+  const totalHours = Math.round(days.reduce((sum, d) => sum + d.hoursWorked, 0) * 100) / 100;
+  const totalOvertime = Math.round(days.reduce((sum, d) => sum + d.overtimeHours, 0) * 100) / 100;
+
+  return buildTablePdf({
+    title: "Timesheet",
+    subtitle: `${staff?.fullName ?? staffId} (${staff?.staffId ?? ""}) — ${from.toISOString().slice(0, 10)} to ${to.toISOString().slice(0, 10)}`,
+    columns: [
+      { header: "Date", width: 80 },
+      { header: "First In", width: 90 },
+      { header: "Last Out", width: 90 },
+      { header: "Hours", width: 60 },
+      { header: "Flags", width: 100 },
+    ],
+    rows: days.map((d) => [
+      d.date,
+      d.firstIn ? new Date(d.firstIn).toLocaleTimeString() : "—",
+      d.lastOut ? new Date(d.lastOut).toLocaleTimeString() : "—",
+      d.hoursWorked,
+      [d.lateArrival && "Late", d.earlyDeparture && "Early leave", d.overtimeHours > 0 && `+${d.overtimeHours}h OT`]
+        .filter(Boolean)
+        .join(", "),
+    ]),
+    totalsRow: ["Total", "", "", totalHours, `${totalOvertime}h overtime`],
+  });
 }
 
 export async function getDepartmentDashboard(requester: AuthUser, departmentId: string | undefined, from: Date, to: Date) {

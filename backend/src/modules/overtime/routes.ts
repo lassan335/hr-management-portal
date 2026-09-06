@@ -71,6 +71,12 @@ export function overtimeRouter(): Router {
         res.setHeader("Content-Disposition", 'attachment; filename="overtime-summary.csv"');
         return res.send(csv);
       }
+      if (query.format === "pdf") {
+        const pdf = await service.monthlySummaryPdf(req.user!, query.staffId, query.month, query.year);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", 'attachment; filename="overtime-summary.pdf"');
+        return res.send(pdf);
+      }
       res.json(await service.monthlySummary(req.user!, query.staffId, query.month, query.year));
     })
   );

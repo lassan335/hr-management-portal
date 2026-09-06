@@ -60,6 +60,10 @@ export const attendanceApi = {
     const params = new URLSearchParams({ from, to, format: "csv", ...(staffId ? { staffId } : {}) });
     return `${API_URL}/api/attendance/timesheet?${params.toString()}`;
   },
+  timesheetPdfUrl: (from: string, to: string, staffId?: string) => {
+    const params = new URLSearchParams({ from, to, format: "pdf", ...(staffId ? { staffId } : {}) });
+    return `${API_URL}/api/attendance/timesheet?${params.toString()}`;
+  },
   dashboard: (from: string, to: string, departmentId?: string) => {
     const params = new URLSearchParams({ from, to, ...(departmentId ? { departmentId } : {}) });
     return api.get<DashboardRow[]>(`/api/attendance/dashboard?${params.toString()}`);

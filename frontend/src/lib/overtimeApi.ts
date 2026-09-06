@@ -56,6 +56,10 @@ export const overtimeApi = {
     const params = new URLSearchParams({ month: String(month), year: String(year), format: "csv", ...(staffId ? { staffId } : {}) });
     return `${API_URL}/api/overtime/summary?${params.toString()}`;
   },
+  summaryPdfUrl: (month: number, year: number, staffId?: string) => {
+    const params = new URLSearchParams({ month: String(month), year: String(year), format: "pdf", ...(staffId ? { staffId } : {}) });
+    return `${API_URL}/api/overtime/summary?${params.toString()}`;
+  },
   dashboard: (month: number, year: number, departmentId?: string) => {
     const params = new URLSearchParams({ month: String(month), year: String(year), ...(departmentId ? { departmentId } : {}) });
     return api.get<DashboardRow[]>(`/api/overtime/dashboard?${params.toString()}`);

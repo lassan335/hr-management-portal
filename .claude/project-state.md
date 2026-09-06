@@ -104,9 +104,18 @@ tightened `authenticate()` to stop misreporting a transient DB error as a
 investigated-but-confirmed-non-issue (StrictMode dev-only double-fetch
 racing a fast automated logout), is in `docs/DEPLOY.md`'s session log.
 
+## PDF EXPORT: DONE (2026-09-07)
+
+Added `lib/pdf.ts` (pdfkit-based simple table generator) and wired
+`format=pdf` into both `GET /api/attendance/timesheet` and
+`GET /api/overtime/summary`, alongside the existing CSV option. Verified by
+generating and visually inspecting real PDFs against live data — clean
+table, correct totals row, correct decrypted/derived values. Frontend has
+"Export PDF" links next to "Export CSV" on the Attendance and Overtime
+pages.
+
 ## NOT YET BUILT / KNOWN GAPS
 
-- **PDF export** — CSV only for timesheets/overtime summaries so far.
 - **Real Google OAuth untested** — only `DEV_BYPASS_AUTH` login has been
   exercised against the live DB. Needs real Workspace credentials + a login
   test before relying on the domain-restriction check in production.

@@ -4,6 +4,7 @@ import { recordAudit } from "../../lib/audit";
 import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
+import { buildTablePdf } from "../../lib/pdf";
 import type { overtimeRequestSchema, rateSchema } from "./validation";
 import type { z } from "zod";
 
@@ -201,6 +202,36 @@ export async function monthlySummaryCsv(requester: AuthUser, requestedStaffId: s
       .join(",")
   );
   return [header, ...rows, `,,,Total,${summary.totalCost}`].join("\n");
+}
+
+export async function monthlySummaryPdf(
+  requester: AuthUser,
+  requestedStaffId: string | undefined,
+  month: number,
+  year: number
+): Promise<Buffer> {
+  const summary = await monthlySummary(requester, requestedStaffId, month, year);
+  const staff = await prisma.staff.findUnique({ where: { id: summary.staffId }, select: { fullName: true, staffId: true } });
+
+  return buildTablePdf({
+    title: "Overtime Summary",
+    subtitle: `${staff?.fullName ?? summary.staffId} (${staff?.staffId ?? ""}) — ${summary.month}/${summary.year}`,
+    columns: [
+      { header: "Date", width: 90 },
+      { header: "Hours", width: 70 },
+      { header: "Holiday", width: 70 },
+      { header: "Rate", width: 80 },
+      { header: "Cost", width: 80 },
+    ],
+    rows: summary.rows.map((r) => [
+      r.date.toISOString().slice(0, 10),
+      r.hours,
+      r.isHoliday ? "Yes" : "No",
+      r.rateValue ?? "n/a",
+      r.cost ?? "n/a",
+    ]),
+    totalsRow: ["Total", summary.totalHours, "", "", summary.totalCost],
+  });
 }
 
 export async function departmentDashboard(requester: AuthUser, departmentId: string | undefined, month: number, year: number) {

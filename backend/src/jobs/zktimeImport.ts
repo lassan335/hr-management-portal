@@ -1,0 +1,183 @@
+import fs from "fs";
+import path from "path";
+import { parse as parseCsv } from "csv-parse/sync";
+import ExcelJS from "exceljs";
+import { PunchType } from "@hr/shared";
+import { prisma } from "../lib/prisma";
+
+export interface ParsedPunch {
+  deviceUserId: string;
+  timestamp: Date;
+  punchType: PunchType;
+}
+
+export interface ImportResult {
+  syncLogId: string;
+  processedCount: number;
+  matchedCount: number;
+  unmatchedCount: number;
+}
+
+// ZKTime 5.0 exports vary by device/firmware configuration, so header
+// matching is case-insensitive and tries several common column names rather
+// than assuming one fixed schema.
+const USER_ID_HEADERS = ["device user id", "user id", "ac-no", "enroll number", "pin", "badge number"];
+const TIME_HEADERS = ["time", "date/time", "timestamp", "check time", "punch time"];
+const STATUS_HEADERS = ["status", "punch type", "c/i c/o", "state", "check type"];
+
+const CHECK_IN_VALUES = new Set(["check in", "c/in", "in", "checkin", "0"]);
+const CHECK_OUT_VALUES = new Set(["check out", "c/out", "out", "checkout", "1"]);
+
+function normalizeHeader(h: string): string {
+  return h.trim().toLowerCase();
+}
+
+function findColumn(headers: string[], candidates: string[]): number {
+  const normalized = headers.map(normalizeHeader);
+  for (const candidate of candidates) {
+    const idx = normalized.indexOf(candidate);
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function parsePunchType(raw: string | undefined, fallbackIndexInDay: number): PunchType {
+  if (raw) {
+    const v = raw.trim().toLowerCase();
+    if (CHECK_IN_VALUES.has(v)) return PunchType.IN;
+    if (CHECK_OUT_VALUES.has(v)) return PunchType.OUT;
+  }
+  // No recognizable status column — fall back to strict alternation per
+  // device per day (common for bare punch-log exports with no direction column).
+  return fallbackIndexInDay % 2 === 0 ? PunchType.IN : PunchType.OUT;
+}
+
+function parseTimestamp(raw: unknown): Date | null {
+  if (raw instanceof Date) return raw;
+  if (typeof raw === "number") {
+    // Excel serial date (exceljs sometimes returns numbers for date cells
+    // depending on how the source file encoded them).
+    return new Date(Math.round((raw - 25569) * 86400 * 1000));
+  }
+  if (typeof raw === "string") {
+    const d = new Date(raw);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+export async function readRows(filePath: string): Promise<{ headers: string[]; rows: unknown[][] }> {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".csv") {
+    const content = fs.readFileSync(filePath, "utf8");
+    const records: string[][] = parseCsv(content, { skip_empty_lines: true });
+    return { headers: records[0] ?? [], rows: records.slice(1) };
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const sheet = workbook.worksheets[0];
+  const rows: unknown[][] = [];
+  let headers: string[] = [];
+  sheet.eachRow((row, rowNumber) => {
+    const values = (row.values as unknown[]).slice(1); // exceljs pads index 0
+    if (rowNumber === 1) {
+      headers = values.map((v) => String(v ?? ""));
+    } else {
+      rows.push(values);
+    }
+  });
+  return { headers, rows };
+}
+
+export function toParsedPunches(headers: string[], rows: unknown[][]): { punches: ParsedPunch[]; skipped: number } {
+  const userIdIdx = findColumn(headers, USER_ID_HEADERS);
+  const timeIdx = findColumn(headers, TIME_HEADERS);
+  const statusIdx = findColumn(headers, STATUS_HEADERS);
+
+  if (userIdIdx === -1 || timeIdx === -1) {
+    throw new Error(
+      `Could not find required columns in export. Expected a user-id column (one of: ${USER_ID_HEADERS.join(", ")}) and a time column (one of: ${TIME_HEADERS.join(", ")}).`
+    );
+  }
+
+  const punches: ParsedPunch[] = [];
+  let skipped = 0;
+  const dayIndexByDeviceDay = new Map<string, number>();
+
+  for (const row of rows) {
+    const deviceUserId = String(row[userIdIdx] ?? "").trim();
+    const timestamp = parseTimestamp(row[timeIdx]);
+    if (!deviceUserId || !timestamp) {
+      skipped += 1;
+      continue;
+    }
+    const dayKey = `${deviceUserId}:${timestamp.toISOString().slice(0, 10)}`;
+    const idxInDay = dayIndexByDeviceDay.get(dayKey) ?? 0;
+    dayIndexByDeviceDay.set(dayKey, idxInDay + 1);
+
+    const statusRaw = statusIdx !== -1 ? String(row[statusIdx] ?? "") : undefined;
+    punches.push({
+      deviceUserId,
+      timestamp,
+      punchType: parsePunchType(statusRaw, idxInDay),
+    });
+  }
+
+  return { punches, skipped };
+}
+
+/**
+ * Shared entry point for both the file-watcher and the manual admin upload
+ * endpoint — one code path, so behavior never diverges between the two.
+ * Unmatched device IDs are recorded in the review queue, never dropped.
+ */
+export async function processZKTimeFile(filePath: string, importedBy: string | null = null): Promise<ImportResult> {
+  const fileName = path.basename(filePath);
+  const { headers, rows } = await readRows(filePath);
+  const { punches } = toParsedPunches(headers, rows);
+
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+
+  const syncLog = await prisma.attendanceSyncLog.create({
+    data: { fileName, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0, importedBy },
+  });
+
+  for (const punch of punches) {
+    const device = await prisma.attendanceDevice.upsert({
+      where: { deviceUserId: punch.deviceUserId },
+      create: { deviceUserId: punch.deviceUserId },
+      update: {},
+    });
+
+    if (device.staffId) {
+      await prisma.timeEntry.create({
+        data: {
+          staffId: device.staffId,
+          timestamp: punch.timestamp,
+          punchType: punch.punchType,
+          source: "IMPORT",
+        },
+      });
+      matchedCount += 1;
+    } else {
+      await prisma.attendanceUnmatchedEntry.create({
+        data: {
+          syncLogId: syncLog.id,
+          deviceUserId: punch.deviceUserId,
+          timestamp: punch.timestamp,
+          punchType: punch.punchType,
+        },
+      });
+      unmatchedCount += 1;
+    }
+  }
+
+  await prisma.attendanceSyncLog.update({
+    where: { id: syncLog.id },
+    data: { matchedCount, unmatchedCount },
+  });
+
+  return { syncLogId: syncLog.id, processedCount: punches.length, matchedCount, unmatchedCount };
+}

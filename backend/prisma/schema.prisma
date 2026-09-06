@@ -1,0 +1,398 @@
+// HR Management Portal (Kinbidhoo School) — core schema.
+// Sensitive columns suffixed `Enc` hold AES-256-GCM ciphertext written/read only
+// via backend/src/lib/encryption.ts — never plaintext, never returned to
+// Staff/HOD-facing serializers.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STAFF
+  HOD
+  HR_ADMIN
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum EmploymentType {
+  PERMANENT
+  CONTRACT
+  PART_TIME
+}
+
+enum StaffStatus {
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  RESIGNED
+  TERMINATED
+}
+
+/// Shared staff -> HOD -> HR/Admin approval chain (overtime, leave, corrections).
+/// Staff edit requests skip straight to PENDING_HR (single HR approval step).
+enum ApprovalStatus {
+  PENDING_HOD
+  PENDING_HR
+  APPROVED
+  REJECTED
+}
+
+enum PunchType {
+  IN
+  OUT
+}
+
+enum AttendanceSource {
+  MANUAL
+  IMPORT
+}
+
+enum DocumentType {
+  ID
+  CONTRACT
+  CERTIFICATE
+  PHOTO
+  OTHER
+}
+
+enum NotificationType {
+  OVERTIME_SUBMITTED
+  OVERTIME_APPROVED
+  OVERTIME_REJECTED
+  LEAVE_SUBMITTED
+  LEAVE_APPROVED
+  LEAVE_REJECTED
+  EDIT_REQUEST_SUBMITTED
+  EDIT_REQUEST_APPROVED
+  EDIT_REQUEST_REJECTED
+  ATTENDANCE_CORRECTION_SUBMITTED
+  ATTENDANCE_CORRECTION_REVIEWED
+}
+
+model Department {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  hodStaffId String?  @unique
+  hod        Staff?   @relation("DepartmentHod", fields: [hodStaffId], references: [id])
+  staff      Staff[]  @relation("StaffDepartment")
+  overtimeRates OvertimeRate[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Staff {
+  id               String   @id @default(cuid())
+  staffId          String   @unique
+  fullName         String
+  nationalIdEnc    String
+  dob              DateTime
+  gender           Gender
+  contactNumber    String
+  personalEmail    String
+  homeAddress      String
+  emergencyContact String
+
+  googleEmail String @unique
+  role        Role   @default(STAFF)
+
+  departmentId       String
+  department         Department @relation("StaffDepartment", fields: [departmentId], references: [id])
+  designation        String
+  employmentType     EmploymentType
+  dateJoined         DateTime
+  contractEndDate    DateTime?
+  reportingManagerId String?
+  reportingManager   Staff?  @relation("ReportingChain", fields: [reportingManagerId], references: [id])
+  reports            Staff[] @relation("ReportingChain")
+
+  /// ZKTime 5.0 biometric device user id, once matched/assigned.
+  deviceUserId String? @unique
+
+  status          StaffStatus @default(ACTIVE)
+  /// Bumped on logout, status change, or role/department change to
+  /// invalidate any outstanding session JWTs immediately (see lib/auth.ts).
+  sessionVersion  Int         @default(0)
+  photoDocumentId String?     @unique
+  photoDocument   StaffDocument? @relation("ProfilePhoto", fields: [photoDocumentId], references: [id])
+
+  hodOfDepartment Department? @relation("DepartmentHod")
+
+  qualifications StaffQualification[]
+  documents      StaffDocument[]      @relation("StaffDocuments")
+  bankDetails    StaffBankDetail?
+  statusHistory  StaffStatusHistory[]
+  editRequests   StaffEditRequest[]
+
+  overtimeRequests   OvertimeRequest[] @relation("OvertimeStaff")
+  overtimeHodReviews OvertimeRequest[] @relation("OvertimeHodReviewer")
+  overtimeHrReviews  OvertimeRequest[] @relation("OvertimeHrReviewer")
+
+  timeEntries        TimeEntry[]
+  attendanceDevice   AttendanceDevice?
+  correctionRequests AttendanceCorrectionRequest[] @relation("CorrectionStaff")
+  correctionReviews  AttendanceCorrectionRequest[] @relation("CorrectionReviewer")
+
+  leaveRequests   LeaveRequest[] @relation("LeaveStaff")
+  leaveHodReviews LeaveRequest[] @relation("LeaveHodReviewer")
+  leaveHrReviews  LeaveRequest[] @relation("LeaveHrReviewer")
+  leaveBalances   LeaveBalance[]
+
+  notifications Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StaffQualification {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id])
+  type        String
+  institution String
+  year        Int?
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+/// Also used for the profile photo (docType = PHOTO), so photos get the same
+/// access-controlled storage as ID/contract/certificate uploads.
+model StaffDocument {
+  id           String       @id @default(cuid())
+  staffId      String
+  staff        Staff        @relation("StaffDocuments", fields: [staffId], references: [id])
+  docType      DocumentType
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storagePath  String
+  uploadedBy   String
+  uploadedAt   DateTime     @default(now())
+
+  profileOf Staff? @relation("ProfilePhoto")
+}
+
+model StaffBankDetail {
+  id               String   @id @default(cuid())
+  staffId          String   @unique
+  staff            Staff    @relation(fields: [staffId], references: [id])
+  bankName         String
+  accountNumberEnc String
+  salaryGradeEnc   String
+  updatedAt        DateTime @updatedAt
+}
+
+model StaffStatusHistory {
+  id        String       @id @default(cuid())
+  staffId   String
+  staff     Staff        @relation(fields: [staffId], references: [id])
+  oldStatus StaffStatus?
+  newStatus StaffStatus
+  changedBy String
+  reason    String?
+  changedAt DateTime     @default(now())
+}
+
+/// Staff self-service edit requests. Sensitive fields (salary, employment type,
+/// national ID, bank details) always route through here rather than direct writes.
+model StaffEditRequest {
+  id             String         @id @default(cuid())
+  staffId        String
+  staff          Staff          @relation(fields: [staffId], references: [id])
+  field          String
+  currentValue   String?
+  requestedValue String
+  status         ApprovalStatus @default(PENDING_HR)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime       @default(now())
+}
+
+model OvertimeRate {
+  id            String     @id @default(cuid())
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id])
+  weekdayRate   Decimal    @db.Decimal(10, 2)
+  weekendRate   Decimal    @db.Decimal(10, 2)
+  holidayRate   Decimal    @db.Decimal(10, 2)
+  effectiveFrom DateTime   @default(now())
+}
+
+model OvertimeRequest {
+  id        String   @id @default(cuid())
+  staffId   String
+  staff     Staff    @relation("OvertimeStaff", fields: [staffId], references: [id])
+  date      DateTime
+  hours     Decimal  @db.Decimal(5, 2)
+  reason    String
+  notes     String?
+  /// Weekday/weekend is derived from `date`; holiday must be flagged
+  /// explicitly since it isn't purely a function of the calendar date.
+  isHoliday Boolean  @default(false)
+
+  status        ApprovalStatus @default(PENDING_HOD)
+  hodReviewerId String?
+  hodReviewer   Staff?         @relation("OvertimeHodReviewer", fields: [hodReviewerId], references: [id])
+  hodReviewedAt DateTime?
+  hrReviewerId  String?
+  hrReviewer    Staff?         @relation("OvertimeHrReviewer", fields: [hrReviewerId], references: [id])
+  hrReviewedAt  DateTime?
+
+  createdAt DateTime @default(now())
+}
+
+/// Registry of ZKTime 5.0 biometric device user ids seen in imports. Rows start
+/// with staffId = null (unmatched) until an admin resolves them by linking to a
+/// staff record, at which point staff.deviceUserId is also backfilled.
+model AttendanceDevice {
+  id           String   @id @default(cuid())
+  deviceUserId String   @unique
+  staffId      String?  @unique
+  staff        Staff?   @relation(fields: [staffId], references: [id])
+  label        String?
+  createdAt    DateTime @default(now())
+}
+
+model TimeEntry {
+  id        String           @id @default(cuid())
+  staffId   String
+  staff     Staff            @relation(fields: [staffId], references: [id])
+  timestamp DateTime
+  punchType PunchType
+  source    AttendanceSource @default(MANUAL)
+  createdAt DateTime         @default(now())
+
+  @@index([staffId, timestamp])
+}
+
+/// One row per ZKTime import run (manual upload or file-watcher pickup).
+model AttendanceSyncLog {
+  id             String                     @id @default(cuid())
+  fileName       String
+  processedCount Int
+  matchedCount   Int
+  unmatchedCount Int
+  importedBy     String?
+  importedAt     DateTime                   @default(now())
+  unmatchedEntries AttendanceUnmatchedEntry[]
+}
+
+/// Rows from an import run whose device_user_id didn't match any staff —
+/// surfaced in the admin review queue instead of being silently dropped.
+model AttendanceUnmatchedEntry {
+  id              String            @id @default(cuid())
+  syncLogId       String
+  syncLog         AttendanceSyncLog @relation(fields: [syncLogId], references: [id])
+  deviceUserId    String
+  timestamp       DateTime
+  punchType       PunchType
+  resolved        Boolean           @default(false)
+  resolvedStaffId String?
+  resolvedAt      DateTime?
+  createdAt       DateTime          @default(now())
+}
+
+model AttendanceCorrectionRequest {
+  id                 String         @id @default(cuid())
+  staffId            String
+  staff              Staff          @relation("CorrectionStaff", fields: [staffId], references: [id])
+  timeEntryId        String?
+  date               DateTime
+  requestedPunchType PunchType
+  requestedTime      DateTime
+  reason             String
+
+  status       ApprovalStatus @default(PENDING_HOD)
+  reviewerId   String?
+  reviewer     Staff?         @relation("CorrectionReviewer", fields: [reviewerId], references: [id])
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+}
+
+model LeaveType {
+  id          String @id @default(cuid())
+  name        String @unique
+  /// Free-text/JSON accrual description (e.g. "1.5 days/month") — kept simple
+  /// for a v1; a dedicated accrual-rule engine can replace this later.
+  accrualRule String?
+  isCustom    Boolean @default(false)
+
+  balances LeaveBalance[]
+  requests LeaveRequest[]
+}
+
+model LeaveBalance {
+  id          String    @id @default(cuid())
+  staffId     String
+  staff       Staff     @relation(fields: [staffId], references: [id])
+  leaveTypeId String
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  year        Int
+  balanceDays Decimal   @db.Decimal(5, 2)
+
+  @@unique([staffId, leaveTypeId, year])
+}
+
+model LeaveRequest {
+  id          String    @id @default(cuid())
+  staffId     String
+  staff       Staff     @relation("LeaveStaff", fields: [staffId], references: [id])
+  leaveTypeId String
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  startDate   DateTime
+  endDate     DateTime
+  reason      String?
+
+  status        ApprovalStatus @default(PENDING_HOD)
+  hodReviewerId String?
+  hodReviewer   Staff?         @relation("LeaveHodReviewer", fields: [hodReviewerId], references: [id])
+  hodReviewedAt DateTime?
+  hrReviewerId  String?
+  hrReviewer    Staff?         @relation("LeaveHrReviewer", fields: [hrReviewerId], references: [id])
+  hrReviewedAt  DateTime?
+
+  createdAt DateTime @default(now())
+}
+
+/// School term/holiday calendar. Leave requests overlapping a blocksLeave range
+/// are rejected at the API layer before entering the approval chain.
+model TermCalendar {
+  id          String   @id @default(cuid())
+  termName    String
+  startDate   DateTime
+  endDate     DateTime
+  blocksLeave Boolean  @default(false)
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  staffId   String
+  staff     Staff            @relation(fields: [staffId], references: [id])
+  type      NotificationType
+  message   String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  entity    String
+  entityId  String
+  ipAddress String?
+  userAgent String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+}

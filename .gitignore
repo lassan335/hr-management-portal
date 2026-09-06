@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/import-watch/incoming/*
+!backend/import-watch/incoming/.gitkeep
+
+.DS_Store
+Thumbs.db

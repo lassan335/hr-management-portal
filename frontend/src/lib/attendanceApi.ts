@@ -1,0 +1,88 @@
+import { api } from "./api";
+
+export interface DayTimesheet {
+  date: string;
+  firstIn: string | null;
+  lastOut: string | null;
+  hoursWorked: number;
+  lateArrival: boolean;
+  earlyDeparture: boolean;
+  overtimeHours: number;
+}
+
+export interface DashboardRow {
+  staffId: string;
+  staffCode: string;
+  fullName: string;
+  totalHours: number;
+  lateCount: number;
+  earlyDepartureCount: number;
+  overtimeHours: number;
+}
+
+export interface SyncLogEntry {
+  id: string;
+  fileName: string;
+  processedCount: number;
+  matchedCount: number;
+  unmatchedCount: number;
+  importedAt: string;
+}
+
+export interface UnmatchedEntry {
+  id: string;
+  deviceUserId: string;
+  timestamp: string;
+  punchType: string;
+  syncLog: { fileName: string; importedAt: string };
+}
+
+export interface CorrectionRequest {
+  id: string;
+  staffId: string;
+  date: string;
+  requestedPunchType: string;
+  requestedTime: string;
+  reason: string;
+  status: string;
+  staff?: { fullName: string; staffId: string };
+}
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+
+export const attendanceApi = {
+  clock: (punchType?: "IN" | "OUT") => api.post("/api/attendance/clock", punchType ? { punchType } : {}),
+  timesheet: (from: string, to: string, staffId?: string) => {
+    const params = new URLSearchParams({ from, to, ...(staffId ? { staffId } : {}) });
+    return api.get<DayTimesheet[]>(`/api/attendance/timesheet?${params.toString()}`);
+  },
+  timesheetCsvUrl: (from: string, to: string, staffId?: string) => {
+    const params = new URLSearchParams({ from, to, format: "csv", ...(staffId ? { staffId } : {}) });
+    return `${API_URL}/api/attendance/timesheet?${params.toString()}`;
+  },
+  dashboard: (from: string, to: string, departmentId?: string) => {
+    const params = new URLSearchParams({ from, to, ...(departmentId ? { departmentId } : {}) });
+    return api.get<DashboardRow[]>(`/api/attendance/dashboard?${params.toString()}`);
+  },
+  syncLogs: () => api.get<SyncLogEntry[]>("/api/attendance/sync-log"),
+  unmatched: () => api.get<UnmatchedEntry[]>("/api/attendance/unmatched"),
+  resolveUnmatched: (deviceUserId: string, staffId: string) =>
+    api.post(`/api/attendance/unmatched/${deviceUserId}/resolve`, { staffId }),
+  corrections: () => api.get<CorrectionRequest[]>("/api/attendance/corrections"),
+  submitCorrection: (input: { date: string; requestedPunchType: string; requestedTime: string; reason: string }) =>
+    api.post("/api/attendance/corrections", input),
+  reviewCorrection: (id: string, decision: "APPROVE" | "REJECT") =>
+    api.patch(`/api/attendance/corrections/${id}`, { decision }),
+};
+
+export async function uploadZktimeFile(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_URL}/api/attendance/import`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText);
+  return res.json();
+}

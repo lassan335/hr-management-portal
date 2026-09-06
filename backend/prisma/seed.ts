@@ -1,0 +1,249 @@
+import { PrismaClient } from "@prisma/client";
+import { encryptField } from "../src/lib/encryption";
+
+const prisma = new PrismaClient();
+
+const DOMAIN = process.env.ALLOWED_GOOGLE_DOMAIN || "kinbidhooschool.edu.mv";
+
+async function main() {
+  console.log("Seeding HR Management Portal demo data...");
+
+  // --- Departments -----------------------------------------------------
+  const [math, science, languages, admin] = await Promise.all(
+    ["Mathematics", "Science", "Languages", "Administration"].map((name) =>
+      prisma.department.upsert({ where: { name }, create: { name }, update: {} })
+    )
+  );
+
+  // --- Leave types -------------------------------------------------------
+  const leaveTypeDefs = [
+    { name: "Sick", accrualRule: "1 day/month" },
+    { name: "Annual", accrualRule: "1.5 days/month" },
+    { name: "Unpaid", accrualRule: "none" },
+    { name: "Maternity/Paternity", accrualRule: "one-time grant" },
+    { name: "Study Leave", accrualRule: "school-configurable", isCustom: true },
+  ];
+  const leaveTypes: Record<string, { id: string }> = {};
+  for (const lt of leaveTypeDefs) {
+    leaveTypes[lt.name] = await prisma.leaveType.upsert({
+      where: { name: lt.name },
+      create: lt,
+      update: {},
+    });
+  }
+
+  // --- Term calendar -------------------------------------------------------
+  const year = new Date().getFullYear();
+  await prisma.termCalendar.createMany({
+    data: [
+      { termName: `Term 1, ${year}`, startDate: new Date(year, 0, 15), endDate: new Date(year, 3, 30), blocksLeave: false },
+      {
+        termName: `Term 1 Exams, ${year}`,
+        startDate: new Date(year, 3, 15),
+        endDate: new Date(year, 3, 30),
+        blocksLeave: true,
+      },
+    ],
+    skipDuplicates: true,
+  });
+
+  // --- Overtime rates (per department) -------------------------------------
+  for (const dept of [math, science, languages, admin]) {
+    await prisma.overtimeRate.create({
+      data: { departmentId: dept.id, weekdayRate: 75, weekendRate: 110, holidayRate: 150 },
+    });
+  }
+
+  // --- Staff ---------------------------------------------------------------
+  // Device user ids 1001/1002 match backend/prisma/seed-data/zktime-sample-export.csv
+  // so the ZKTime import can be demoed end to end; 9999 in that file is left
+  // deliberately unmatched to exercise the admin review queue.
+  const staffDefs = [
+    {
+      staffId: "KS-0001",
+      fullName: "Aishath Nashida",
+      role: "HR_ADMIN",
+      departmentId: admin.id,
+      designation: "HR Manager",
+      googleEmail: `hr.admin@${DOMAIN}`,
+      deviceUserId: null,
+    },
+    {
+      staffId: "KS-0002",
+      fullName: "Mohamed Shifau",
+      role: "HOD",
+      departmentId: math.id,
+      designation: "Head of Mathematics",
+      googleEmail: `shifau@${DOMAIN}`,
+      deviceUserId: null,
+    },
+    {
+      staffId: "KS-0003",
+      fullName: "Fathimath Rasheeda",
+      role: "HOD",
+      departmentId: science.id,
+      designation: "Head of Science",
+      googleEmail: `rasheeda@${DOMAIN}`,
+      deviceUserId: null,
+    },
+    {
+      staffId: "KS-0004",
+      fullName: "Ahmed Rasheed",
+      role: "STAFF",
+      departmentId: math.id,
+      designation: "Mathematics Teacher",
+      googleEmail: `arasheed@${DOMAIN}`,
+      deviceUserId: "1001",
+    },
+    {
+      staffId: "KS-0005",
+      fullName: "Mariyam Shifa",
+      role: "STAFF",
+      departmentId: science.id,
+      designation: "Science Teacher",
+      googleEmail: `mshifa@${DOMAIN}`,
+      deviceUserId: "1002",
+    },
+    {
+      staffId: "KS-0006",
+      fullName: "Hussain Waheed",
+      role: "STAFF",
+      departmentId: languages.id,
+      designation: "English Teacher",
+      googleEmail: `hwaheed@${DOMAIN}`,
+      deviceUserId: null,
+    },
+    {
+      staffId: "KS-0007",
+      fullName: "Aminath Wisam",
+      role: "STAFF",
+      departmentId: admin.id,
+      designation: "Front Office Assistant",
+      googleEmail: `awisam@${DOMAIN}`,
+      deviceUserId: null,
+    },
+  ];
+
+  const staffByCode: Record<string, { id: string; departmentId: string }> = {};
+  for (const s of staffDefs) {
+    const created = await prisma.staff.upsert({
+      where: { staffId: s.staffId },
+      create: {
+        staffId: s.staffId,
+        fullName: s.fullName,
+        nationalIdEnc: encryptField(`A${Math.floor(100000 + Math.random() * 900000)}`),
+        dob: new Date(1985, 3, 12),
+        gender: "OTHER",
+        contactNumber: "+960 777-0000",
+        personalEmail: `${s.staffId.toLowerCase()}@example.com`,
+        homeAddress: "Th. Kinbidhoo",
+        emergencyContact: "+960 777-1111",
+        googleEmail: s.googleEmail,
+        role: s.role as any,
+        departmentId: s.departmentId,
+        designation: s.designation,
+        employmentType: "PERMANENT",
+        dateJoined: new Date(2020, 0, 1),
+        deviceUserId: s.deviceUserId,
+      },
+      update: {},
+    });
+    staffByCode[s.staffId] = created;
+  }
+
+  // Departments' HOD pointers
+  await prisma.department.update({ where: { id: math.id }, data: { hodStaffId: staffByCode["KS-0002"].id } });
+  await prisma.department.update({ where: { id: science.id }, data: { hodStaffId: staffByCode["KS-0003"].id } });
+
+  // --- Bank details (HR/Admin-only) for a couple of staff -------------------
+  await prisma.staffBankDetail.upsert({
+    where: { staffId: staffByCode["KS-0004"].id },
+    create: {
+      staffId: staffByCode["KS-0004"].id,
+      bankName: "Bank of Maldives",
+      accountNumberEnc: encryptField("7730000123456"),
+      salaryGradeEnc: encryptField("Grade 7"),
+    },
+    update: {},
+  });
+
+  // --- Leave balances for current year --------------------------------------
+  for (const code of Object.keys(staffByCode)) {
+    for (const [name, amount] of [
+      ["Sick", 12],
+      ["Annual", 18],
+      ["Study Leave", 5],
+    ] as const) {
+      await prisma.leaveBalance.upsert({
+        where: {
+          staffId_leaveTypeId_year: { staffId: staffByCode[code].id, leaveTypeId: leaveTypes[name].id, year },
+        },
+        create: { staffId: staffByCode[code].id, leaveTypeId: leaveTypes[name].id, year, balanceDays: amount },
+        update: {},
+      });
+    }
+  }
+
+  // --- Sample overtime requests ----------------------------------------------
+  await prisma.overtimeRequest.createMany({
+    data: [
+      {
+        staffId: staffByCode["KS-0004"].id,
+        date: new Date(year, new Date().getMonth(), 3),
+        hours: 2,
+        reason: "Extra exam prep supervision",
+        status: "PENDING_HOD",
+      },
+      {
+        staffId: staffByCode["KS-0005"].id,
+        date: new Date(year, new Date().getMonth(), 5),
+        hours: 3,
+        reason: "Science fair setup",
+        status: "APPROVED",
+        hodReviewerId: staffByCode["KS-0003"].id,
+        hodReviewedAt: new Date(),
+        hrReviewerId: staffByCode["KS-0001"].id,
+        hrReviewedAt: new Date(),
+      },
+    ],
+  });
+
+  // --- Sample leave request ---------------------------------------------------
+  await prisma.leaveRequest.create({
+    data: {
+      staffId: staffByCode["KS-0006"].id,
+      leaveTypeId: leaveTypes["Sick"].id,
+      startDate: new Date(year, new Date().getMonth(), 10),
+      endDate: new Date(year, new Date().getMonth(), 11),
+      reason: "Flu",
+      status: "PENDING_HOD",
+    },
+  });
+
+  // --- Sample manual time entries ----------------------------------------------
+  const today = new Date();
+  for (const code of ["KS-0006", "KS-0007"]) {
+    const inTime = new Date(today);
+    inTime.setHours(8, 5, 0, 0);
+    const outTime = new Date(today);
+    outTime.setHours(14, 20, 0, 0);
+    await prisma.timeEntry.createMany({
+      data: [
+        { staffId: staffByCode[code].id, timestamp: inTime, punchType: "IN", source: "MANUAL" },
+        { staffId: staffByCode[code].id, timestamp: outTime, punchType: "OUT", source: "MANUAL" },
+      ],
+    });
+  }
+
+  console.log("Seed complete.");
+  console.log("Dev-login staff IDs: KS-0001 (HR_ADMIN), KS-0002/KS-0003 (HOD), KS-0004..KS-0007 (STAFF)");
+  console.log("Sample ZKTime export ready at backend/prisma/seed-data/zktime-sample-export.csv");
+  console.log("  (device 1001 -> KS-0004, 1002 -> KS-0005, 9999 -> unmatched, for the review queue demo)");
+}
+
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  })
+  .finally(() => prisma.$disconnect());

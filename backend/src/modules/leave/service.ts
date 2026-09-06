@@ -82,7 +82,7 @@ export async function submitLeaveRequest(
   const requestedDays = inclusiveDays(input.startDate, new Date(input.endDate));
   const year = input.startDate.getFullYear();
 
-  if (leaveType.name.toLowerCase() !== "unpaid") {
+  if (leaveType.deductsBalance) {
     const balance = await prisma.leaveBalance.findUnique({
       where: { staffId_leaveTypeId_year: { staffId: actor.staffId, leaveTypeId: input.leaveTypeId, year } },
     });
@@ -188,7 +188,7 @@ export async function reviewLeaveRequest(
 
     const requestedDays = inclusiveDays(request.startDate, new Date(request.endDate));
     const year = request.startDate.getFullYear();
-    if (request.leaveType.name.toLowerCase() !== "unpaid") {
+    if (request.leaveType.deductsBalance) {
       // Atomic compare-and-decrement — a plain read-then-write here would let
       // two concurrent approvals for the same staff/leaveType/year both pass
       // their individual checks before either write lands, overdrawing the

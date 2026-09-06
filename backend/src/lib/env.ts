@@ -49,13 +49,26 @@ export const env = {
 
   zktimeWatchDir: process.env.ZKTIME_WATCH_DIR || "",
 
-  // Standard shift window used for late-arrival/early-departure/overtime
-  // flagging in the attendance timesheet. School-wide for v1 — a
-  // per-department schedule can replace this later if needed.
-  shiftStart: process.env.SHIFT_START ?? "08:00",
-  shiftEnd: process.env.SHIFT_END ?? "14:00",
+  // Fallback shift window for staff not assigned to a StaffGroup — real
+  // scheduling (sign-in time + working hours) comes from the staff's group
+  // (see prisma schema's StaffGroup model), matching the legacy portal's
+  // "Staff Groups" concept (e.g. New Framework: 06:45/8h, Old Framework:
+  // 06:45/6h).
+  defaultShiftStart: process.env.SHIFT_START ?? "08:00",
   gracePeriodMinutes: Number(process.env.GRACE_PERIOD_MINUTES ?? 10),
-  standardDailyHours: Number(process.env.STANDARD_DAILY_HOURS ?? 6),
+  defaultStandardDailyHours: Number(process.env.STANDARD_DAILY_HOURS ?? 6),
+
+  // Uniform eligibility thresholds (apply school-wide regardless of the
+  // staff member's own group's standard daily hours).
+  holidayAttendanceThresholdHours: Number(process.env.HOLIDAY_ATTENDANCE_THRESHOLD_HOURS ?? 3),
+  overtimeEligibleThresholdHours: Number(process.env.OVERTIME_ELIGIBLE_THRESHOLD_HOURS ?? 8),
+
+  // Overtime policy, mirroring the legacy portal's General Settings page.
+  otMaxContinuousMinutes: Number(process.env.OT_MAX_CONTINUOUS_MINUTES ?? 480),
+  otSubmissionWindowDays: Number(process.env.OT_SUBMISSION_WINDOW_DAYS ?? 3),
+  // OT/payroll reporting period runs <this day> of a month through
+  // <this day - 1> of the next, not the calendar month (e.g. 16th -> 15th).
+  otPeriodStartDay: Number(process.env.OT_PERIOD_START_DAY ?? 16),
 };
 
 if (nodeEnv !== "production") {

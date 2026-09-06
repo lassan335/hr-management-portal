@@ -140,6 +140,68 @@ device ID; `Time`/`Date/Time`/`Timestamp`/... for the punch time; `Status`/
 device-per-day if no status column is present). If your ZKTime export uses
 different headers, add them to the candidate lists in `zktimeImport.ts`.
 
+## Overtime, staff groups & leave policy (matches the legacy portal)
+
+These were reverse-engineered from screenshots of the actual legacy v7.0
+system's settings pages, not the original spec, and take precedence over it.
+
+**Overtime is pre-approval, not after-the-fact reporting.** A staff member
+requests a specific date + time-in/time-out slot *before* doing the work
+("My Pre-requested Overtime Slips"). It goes through the usual staff → HOD →
+HR approval chain. Once **APPROVED**, the staff member does the work and then
+explicitly marks it **"Complete OT Work"** — only requests that are approved
+**and** completed (and never cancelled) count toward payroll or appear in the
+monthly summary/ledger. A request can be **cancelled** by its owner any time
+before it's marked complete. See `backend/src/modules/overtime/service.ts`.
+
+Overtime policy (mirrors the legacy General Settings page, all configurable
+via env vars in `backend/.env.example`):
+- **Max continuous duration per slot:** 480 minutes (`OT_MAX_CONTINUOUS_MINUTES`)
+- **Submission window:** requests must be filed within 3 days of the work
+  date (`OT_SUBMISSION_WINDOW_DAYS`)
+- **Payroll/OT period:** runs the 16th of one month to the 15th of the next
+  (`OT_PERIOD_START_DAY`), not a calendar month — the monthly ledger/summary
+  for "September" is actually 16 Aug–15 Sep
+
+**Staff Groups** replace a single school-wide shift for attendance timing.
+Each `StaffGroup` (HR-managed) carries its own sign-in time and standard
+daily hours; a staff member's late-arrival/overtime-threshold flags in their
+timesheet use their assigned group's settings, falling back to the
+school-wide default (`SHIFT_START`/`STANDARD_DAILY_HOURS`) if unassigned.
+Seeded groups: **New Framework** (8h, 06:45 sign-in) and **Old Framework**
+(6h, 06:45 sign-in).
+
+**Two uniform eligibility thresholds** apply school-wide regardless of a
+staff member's group, surfaced as flags on each day's timesheet
+(`backend/src/modules/attendance/timesheet.ts`):
+- **Holiday attendance eligible:** worked ≥3 hours on a weekend/holiday
+  (`HOLIDAY_ATTENDANCE_THRESHOLD_HOURS`)
+- **Overtime eligible:** worked ≥8 hours that day (`OVERTIME_ELIGIBLE_THRESHOLD_HOURS`)
+
+**Leave types** match the legacy portal's real types: Annual Leave, Sick
+Leave With MC, Sick Leave Without MC, Family Responsibility Leave, plus
+Unpaid Leave and Maternity/Paternity Leave. Each `LeaveType` has a
+`deductsBalance` flag (Unpaid Leave is the only seeded type with it off) —
+this replaced an earlier, fragile "is the name literally 'unpaid'?" string
+check.
+
+### Deferred / out of scope
+
+Fields visible on the legacy "View and Manage Monthly OT Sheets" screen that
+this build does **not** implement, documented as known gaps rather than
+silently dropped:
+- **Basic Salary, Self-Capped, Group-Capped columns** — would need a plain
+  numeric salary field; `salaryGrade` here is free-text and encrypted, not a
+  number to cap against.
+- **"Attendance Eligible" cross-check** against actual ZKTime punches for the
+  same day (currently the OT ledger doesn't verify the staff member was also
+  clocked in).
+- **A manual "Verified" QA flag** and the "Non-Official" column (its meaning
+  wasn't clear from the screenshot).
+- **A real holiday/non-working-days calendar** — "holiday" is currently
+  approximated as Saturday/Sunday; there's no way to mark a weekday as a
+  one-off holiday.
+
 ## Project structure
 
 ```
@@ -191,3 +253,12 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
   approval (including the resulting leave-balance deduction) were driven by
   actual button clicks, not just API calls. See `docs/DEPLOY.md`'s session
   logs for the five real bugs this process caught (all fixed).
+- **Overtime pre-approval rewrite (2026-09-07):** the new submit → HOD →
+  HR → complete/cancel flow, staff groups, real leave types, and the two
+  eligibility thresholds were verified against the live Supabase database —
+  the full approval chain plus duration-cap/submission-window rejections via
+  curl, and submit/cancel plus the ledger/dashboard data via a real browser
+  (Playwright). The HOD/HR approve-button clicks for *this* rewrite were
+  exercised via curl, not clicked in-browser — functionally equivalent (same
+  endpoint, same code path already browser-verified for leave above) but
+  worth a follow-up click-through if this area changes again.

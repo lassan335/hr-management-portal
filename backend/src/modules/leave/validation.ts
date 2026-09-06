@@ -4,6 +4,7 @@ export const leaveTypeSchema = z.object({
   name: z.string().min(1),
   accrualRule: z.string().optional(),
   isCustom: z.boolean().optional().default(true),
+  deductsBalance: z.boolean().optional().default(true),
 });
 
 export const termCalendarSchema = z.object({

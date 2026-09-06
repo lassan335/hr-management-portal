@@ -10,7 +10,7 @@ import { nextApprovalStatus } from "../../lib/approvalChain";
 import { endOfUtcDay } from "../../lib/dateRange";
 import { buildTablePdf } from "../../lib/pdf";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
-import { buildTimesheet } from "./timesheet";
+import { buildTimesheet, shiftSettingsFor } from "./timesheet";
 import type { correctionSchema } from "./validation";
 import type { z } from "zod";
 
@@ -43,11 +43,14 @@ async function resolveTargetStaffId(requester: AuthUser, requestedStaffId?: stri
 
 export async function getTimesheet(requester: AuthUser, requestedStaffId: string | undefined, from: Date, to: Date) {
   const staffId = await resolveTargetStaffId(requester, requestedStaffId);
-  const entries = await prisma.timeEntry.findMany({
-    where: { staffId, timestamp: { gte: from, lte: endOfUtcDay(to) } },
-    orderBy: { timestamp: "asc" },
-  });
-  return buildTimesheet(entries);
+  const [staff, entries] = await Promise.all([
+    prisma.staff.findUnique({ where: { id: staffId }, include: { staffGroup: true } }),
+    prisma.timeEntry.findMany({
+      where: { staffId, timestamp: { gte: from, lte: endOfUtcDay(to) } },
+      orderBy: { timestamp: "asc" },
+    }),
+  ]);
+  return buildTimesheet(entries, shiftSettingsFor(staff?.staffGroup ?? null));
 }
 
 export async function exportTimesheetCsv(requester: AuthUser, requestedStaffId: string | undefined, from: Date, to: Date) {
@@ -107,7 +110,7 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
 
   const staffList = await prisma.staff.findMany({
     where: deptId ? { departmentId: deptId } : {},
-    select: { id: true, fullName: true, staffId: true },
+    select: { id: true, fullName: true, staffId: true, staffGroup: true },
   });
 
   const rows = await Promise.all(
@@ -116,7 +119,7 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
         where: { staffId: s.id, timestamp: { gte: from, lte: endOfUtcDay(to) } },
         orderBy: { timestamp: "asc" },
       });
-      const days = buildTimesheet(entries);
+      const days = buildTimesheet(entries, shiftSettingsFor(s.staffGroup));
       return {
         staffId: s.id,
         staffCode: s.staffId,

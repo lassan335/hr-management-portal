@@ -1,8 +1,13 @@
 import { z } from "zod";
 
+// timeIn/timeOut are "HH:mm" strings combined with `date` server-side —
+// matches the legacy portal's separate Date / Time In / Time Out fields.
+const timeString = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "expected HH:mm");
+
 export const overtimeRequestSchema = z.object({
   date: z.coerce.date(),
-  hours: z.coerce.number().positive().max(24),
+  timeIn: timeString,
+  timeOut: timeString,
   reason: z.string().min(1),
   notes: z.string().optional(),
   isHoliday: z.boolean().optional().default(false),

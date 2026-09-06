@@ -127,6 +127,53 @@ JWT issuance, and staff-record lookup all work against a real (not
 dev-bypass) login. Redirect URI registered: only the local dev callback so
 far — add the production callback URL once hosting is chosen.
 
+## OVERTIME PRE-APPROVAL REWRITE + STAFF GROUPS + REAL LEAVE TYPES: DONE (2026-09-07)
+
+Reverse-engineered from real legacy v7.0 screenshots (not the original
+spec) and treated as a definitive correction, not a suggestion:
+
+- **Overtime is pre-approval**, not after-the-fact hours reporting: staff
+  request a date + time-in/time-out slot *before* doing the work, it goes
+  through the usual staff → HOD → HR chain, and once APPROVED the staff
+  member explicitly marks it "Complete OT Work" — only APPROVED +
+  workCompleted + non-cancelled requests count toward payroll/the monthly
+  ledger. Cancel is allowed any time before completion. New policy knobs
+  (all env-configurable, mirroring the legacy General Settings page): max
+  480-minute continuous duration per slot, 3-day submission window, and a
+  16th-to-15th OT/payroll period instead of a calendar month.
+- **`StaffGroup` model** added (New Framework: 8h/06:45 sign-in; Old
+  Framework: 6h/06:45 sign-in) — attendance timesheet late-arrival/overtime
+  flagging now uses each staff member's assigned group's shift settings,
+  falling back to the school-wide default if unassigned.
+- **Two uniform eligibility thresholds** added to the timesheet regardless
+  of staff group, per explicit instruction: holiday-attendance-eligible at
+  ≥3h worked on a weekend/holiday, overtime-eligible at ≥8h worked.
+- **`LeaveType.deductsBalance`** flag replaces a fragile name-based "is this
+  literally called 'unpaid'?" string check; leave types renamed to match the
+  legacy portal's real ones (Annual Leave, Sick Leave With MC, Sick Leave
+  Without MC, Family Responsibility Leave, Unpaid Leave, Maternity/Paternity
+  Leave).
+- A new school-wide **OT ledger** (`GET /api/overtime/ledger`, HR/HOD) mirrors
+  the legacy "View and Manage Monthly OT Sheets" screen — one row per
+  completed OT slot, not per-staff totals.
+
+Deliberately deferred/out of scope (see README's "Deferred / out of scope"
+under the same heading): Basic Salary + Self/Group-Capped columns (no plain
+numeric salary field exists to cap against), an "Attendance Eligible"
+cross-check against actual ZKTime punches, a manual "Verified" QA flag, the
+unclear "Non-Official" column, and a real holiday calendar (holiday is
+currently approximated as Saturday/Sunday).
+
+Verified against the live Supabase database: full submit → HOD-approve →
+HR-approve → complete cycle, cancel, duration-cap rejection, submission-
+window rejection, and the double-approval guard, all via curl; submit,
+cancel, and the ledger/dashboard data additionally confirmed rendering
+correctly in a real browser (Playwright) with no console errors. Backend
+and frontend both typecheck clean (`tsc --noEmit` / `tsc -b`, exit 0).
+Transactional demo data (`OvertimeRequest`/`LeaveRequest`/`TimeEntry`) was
+cleared and `db:seed` re-run afterward to remove test pollution from this
+verification pass.
+
 ## NOT YET BUILT / KNOWN GAPS
 
 - **Hosting** — not chosen; `docs/DEPLOY.md` is explicit that this blocks any
@@ -138,3 +185,6 @@ far — add the production callback URL once hosting is chosen.
 - **Leave accrual** — `LeaveBalance` is a static number HR sets/adjusts
   (`accrualRule` is descriptive text only), not an automatic monthly-accrual
   engine. Revisit if automatic accrual becomes a real requirement.
+- **Overtime ledger's deferred fields** — see above: Basic Salary/Self-Capped/
+  Group-Capped columns, Attendance Eligible cross-check, Verified QA flag,
+  Non-Official column, and a real holiday/non-working-days calendar.

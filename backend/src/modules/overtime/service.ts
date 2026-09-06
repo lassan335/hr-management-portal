@@ -5,6 +5,7 @@ import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
 import { buildTablePdf } from "../../lib/pdf";
+import { env } from "../../lib/env";
 import type { overtimeRequestSchema, rateSchema } from "./validation";
 import type { z } from "zod";
 
@@ -29,16 +30,45 @@ function rateValueFor(
   return Number(rate.weekdayRate);
 }
 
+/** Combines a calendar date with an "HH:mm" string. If timeOut is not after
+ * timeIn, the slot is assumed to cross midnight (e.g. 22:00 -> 02:00). */
+function combineDateAndTime(date: Date, hhmm: string): Date {
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = new Date(date);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+function hoursBetween(timeIn: Date, timeOut: Date): number {
+  const ms = timeOut.getTime() - timeIn.getTime();
+  return Math.round((ms / 3600000) * 100) / 100;
+}
+
 export async function submitRequest(
   actor: AuthUser,
   input: z.infer<typeof overtimeRequestSchema>,
   meta: AuditMeta = {}
 ) {
+  const timeIn = combineDateAndTime(input.date, input.timeIn);
+  let timeOut = combineDateAndTime(input.date, input.timeOut);
+  if (timeOut <= timeIn) timeOut = new Date(timeOut.getTime() + 24 * 3600000); // crosses midnight
+
+  const durationMinutes = (timeOut.getTime() - timeIn.getTime()) / 60000;
+  if (durationMinutes > env.otMaxContinuousMinutes) {
+    throw new HttpError(400, `duration_exceeds_max:${env.otMaxContinuousMinutes}min`);
+  }
+
+  const daysSinceDate = (Date.now() - input.date.getTime()) / 86400000;
+  if (daysSinceDate > env.otSubmissionWindowDays) {
+    throw new HttpError(400, `submission_window_expired:${env.otSubmissionWindowDays}days`);
+  }
+
   const request = await prisma.overtimeRequest.create({
     data: {
       staffId: actor.staffId,
       date: input.date,
-      hours: input.hours,
+      timeIn,
+      timeOut,
       reason: input.reason,
       notes: input.notes,
       isHoliday: input.isHoliday,
@@ -49,13 +79,13 @@ export async function submitRequest(
     action: "OVERTIME_SUBMITTED",
     entity: "OvertimeRequest",
     entityId: request.id,
-    after: { date: input.date, hours: input.hours },
+    after: { date: input.date, timeIn: input.timeIn, timeOut: input.timeOut },
     ...meta,
   });
   await notify({
     staffId: actor.staffId,
     type: NotificationType.OVERTIME_SUBMITTED,
-    message: `Overtime request submitted for ${input.date.toISOString().slice(0, 10)} (${input.hours}h).`,
+    message: `Overtime request submitted for ${input.date.toISOString().slice(0, 10)}, ${input.timeIn}–${input.timeOut}.`,
   });
   return request;
 }
@@ -63,14 +93,14 @@ export async function submitRequest(
 export async function listRequests(requester: AuthUser) {
   if (requester.role === Role.HR_ADMIN) {
     return prisma.overtimeRequest.findMany({
-      where: { status: { in: ["PENDING_HOD", "PENDING_HR"] } },
+      where: { status: { in: ["PENDING_HOD", "PENDING_HR"] }, cancelled: false },
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
     });
   }
   if (requester.role === Role.HOD) {
     return prisma.overtimeRequest.findMany({
-      where: { status: "PENDING_HOD", staff: { departmentId: requester.departmentId ?? "__none__" } },
+      where: { status: "PENDING_HOD", cancelled: false, staff: { departmentId: requester.departmentId ?? "__none__" } },
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
     });
@@ -78,6 +108,7 @@ export async function listRequests(requester: AuthUser) {
   return prisma.overtimeRequest.findMany({
     where: { staffId: requester.staffId },
     orderBy: { createdAt: "desc" },
+    include: { hodReviewer: { select: { fullName: true } }, hrReviewer: { select: { fullName: true } } },
   });
 }
 
@@ -92,6 +123,7 @@ export async function reviewRequest(
     include: { staff: { select: { departmentId: true } } },
   });
   if (!request) throw new HttpError(404, "not_found");
+  if (request.cancelled) throw new HttpError(409, "request_cancelled");
 
   const newStatus = nextApprovalStatus({
     current: request.status as any,
@@ -130,6 +162,54 @@ export async function reviewRequest(
   return updated;
 }
 
+/** Staff withdrawing their own request — allowed any time before the work is
+ * marked completed, regardless of approval stage (plans changed). */
+export async function cancelRequest(actor: AuthUser, requestId: string, meta: AuditMeta = {}) {
+  const request = await prisma.overtimeRequest.findUnique({ where: { id: requestId } });
+  if (!request) throw new HttpError(404, "not_found");
+  if (request.staffId !== actor.staffId) throw new HttpError(403, "forbidden");
+  if (request.cancelled) throw new HttpError(409, "already_cancelled");
+  if (request.workCompleted) throw new HttpError(409, "already_completed");
+
+  const updated = await prisma.overtimeRequest.update({
+    where: { id: requestId },
+    data: { cancelled: true, cancelledAt: new Date() },
+  });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "OVERTIME_CANCELLED",
+    entity: "OvertimeRequest",
+    entityId: requestId,
+    ...meta,
+  });
+  return updated;
+}
+
+/** Staff confirming the approved work actually happened — only APPROVED,
+ * non-cancelled requests can be marked complete. Payroll totals below only
+ * count requests that reach this state, not merely "approved". */
+export async function completeWork(actor: AuthUser, requestId: string, meta: AuditMeta = {}) {
+  const request = await prisma.overtimeRequest.findUnique({ where: { id: requestId } });
+  if (!request) throw new HttpError(404, "not_found");
+  if (request.staffId !== actor.staffId) throw new HttpError(403, "forbidden");
+  if (request.cancelled) throw new HttpError(409, "request_cancelled");
+  if (request.status !== "APPROVED") throw new HttpError(409, "not_approved");
+  if (request.workCompleted) throw new HttpError(409, "already_completed");
+
+  const updated = await prisma.overtimeRequest.update({
+    where: { id: requestId },
+    data: { workCompleted: true, workCompletedAt: new Date() },
+  });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "OVERTIME_WORK_COMPLETED",
+    entity: "OvertimeRequest",
+    entityId: requestId,
+    ...meta,
+  });
+  return updated;
+}
+
 export async function setRate(actor: AuthUser, input: z.infer<typeof rateSchema>, meta: AuditMeta = {}) {
   if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
   const rate = await prisma.overtimeRate.create({
@@ -158,11 +238,23 @@ export async function getCurrentRate(requester: AuthUser, departmentId: string) 
   return currentRate(departmentId, new Date());
 }
 
-async function approvedRequestsInMonth(staffId: string, month: number, year: number) {
-  const from = new Date(year, month - 1, 1);
-  const to = new Date(year, month, 0, 23, 59, 59);
+/** Only requests that were approved AND actually completed AND never
+ * cancelled count toward payroll — an approved-but-never-done slot isn't paid. */
+/** The OT/payroll period labeled "month" runs from otPeriodStartDay of the
+ * PREVIOUS month through (otPeriodStartDay - 1) of "month" — e.g. with the
+ * default start day 16, the "September" period is 16 Aug -> 15 Sep, matching
+ * the legacy portal's "Monthly Overtime Record Sheet _ 16 Aug to 15 Sep". */
+function otPeriodRange(month: number, year: number): { from: Date; to: Date } {
+  const startDay = env.otPeriodStartDay;
+  const from = new Date(year, month - 2, startDay);
+  const to = new Date(year, month - 1, startDay - 1, 23, 59, 59, 999);
+  return { from, to };
+}
+
+async function payableRequestsInMonth(staffId: string, month: number, year: number) {
+  const { from, to } = otPeriodRange(month, year);
   return prisma.overtimeRequest.findMany({
-    where: { staffId, status: "APPROVED", date: { gte: from, lte: to } },
+    where: { staffId, status: "APPROVED", workCompleted: true, cancelled: false, date: { gte: from, lte: to } },
     orderBy: { date: "asc" },
     include: { staff: { select: { departmentId: true } } },
   });
@@ -177,31 +269,39 @@ export async function monthlySummary(requester: AuthUser, requestedStaffId: stri
     if (!allowed) throw new HttpError(403, "forbidden");
   }
 
-  const requests = await approvedRequestsInMonth(staffId, month, year);
+  const requests = await payableRequestsInMonth(staffId, month, year);
   let totalHours = 0;
   let totalCost = 0;
   const rows = [];
   for (const r of requests) {
     const rate = await currentRate(r.staff.departmentId, r.date);
     const rateValue = rateValueFor(rate, r.date, r.isHoliday);
-    const hours = Number(r.hours);
+    const hours = hoursBetween(r.timeIn, r.timeOut);
     const cost = rateValue !== null ? hours * rateValue : null;
     totalHours += hours;
     if (cost !== null) totalCost += cost;
-    rows.push({ date: r.date, hours, isHoliday: r.isHoliday, rateValue, cost });
+    rows.push({ date: r.date, timeIn: r.timeIn, timeOut: r.timeOut, hours, isHoliday: r.isHoliday, rateValue, cost });
   }
   return { staffId, month, year, totalHours: Math.round(totalHours * 100) / 100, totalCost: Math.round(totalCost * 100) / 100, rows };
 }
 
 export async function monthlySummaryCsv(requester: AuthUser, requestedStaffId: string | undefined, month: number, year: number) {
   const summary = await monthlySummary(requester, requestedStaffId, month, year);
-  const header = "Date,Hours,Holiday,Rate,Cost";
+  const header = "Date,Time In,Time Out,Hours,Holiday,Rate,Cost";
   const rows = summary.rows.map((r) =>
-    [r.date.toISOString().slice(0, 10), r.hours, r.isHoliday, r.rateValue ?? "", r.cost ?? ""]
+    [
+      r.date.toISOString().slice(0, 10),
+      r.timeIn.toLocaleTimeString(),
+      r.timeOut.toLocaleTimeString(),
+      r.hours,
+      r.isHoliday,
+      r.rateValue ?? "",
+      r.cost ?? "",
+    ]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(",")
   );
-  return [header, ...rows, `,,,Total,${summary.totalCost}`].join("\n");
+  return [header, ...rows, `,,,,,Total,${summary.totalCost}`].join("\n");
 }
 
 export async function monthlySummaryPdf(
@@ -215,22 +315,26 @@ export async function monthlySummaryPdf(
 
   return buildTablePdf({
     title: "Overtime Summary",
-    subtitle: `${staff?.fullName ?? summary.staffId} (${staff?.staffId ?? ""}) — ${summary.month}/${summary.year}`,
+    subtitle: `${staff?.fullName ?? summary.staffId} (${staff?.staffId ?? ""}) — ${summary.month}/${summary.year} (completed work only)`,
     columns: [
-      { header: "Date", width: 90 },
-      { header: "Hours", width: 70 },
-      { header: "Holiday", width: 70 },
-      { header: "Rate", width: 80 },
-      { header: "Cost", width: 80 },
+      { header: "Date", width: 80 },
+      { header: "Time In", width: 70 },
+      { header: "Time Out", width: 70 },
+      { header: "Hours", width: 50 },
+      { header: "Holiday", width: 60 },
+      { header: "Rate", width: 70 },
+      { header: "Cost", width: 70 },
     ],
     rows: summary.rows.map((r) => [
       r.date.toISOString().slice(0, 10),
+      r.timeIn.toLocaleTimeString(),
+      r.timeOut.toLocaleTimeString(),
       r.hours,
       r.isHoliday ? "Yes" : "No",
       r.rateValue ?? "n/a",
       r.cost ?? "n/a",
     ]),
-    totalsRow: ["Total", summary.totalHours, "", "", summary.totalCost],
+    totalsRow: ["Total", "", "", summary.totalHours, "", "", summary.totalCost],
   });
 }
 
@@ -260,4 +364,59 @@ export async function departmentDashboard(requester: AuthUser, departmentId: str
     })
   );
   return rows;
+}
+
+/**
+ * Flat, individual-entry ledger across all (or one department's) staff for
+ * an OT period — matches the legacy portal's "View and Manage Monthly OT
+ * Sheets" screen (one row per completed slot, not per-staff totals).
+ * HR/Admin or a HOD (scoped to their own department) only.
+ *
+ * Deliberately NOT implemented here, matching fields visible in that legacy
+ * screen but out of scope for now: numeric Basic Salary / Self-Capped /
+ * Group-Capped columns (this schema has no plain numeric salary field to
+ * cap against — salaryGrade is free text, encrypted), "Attendance Eligible"
+ * cross-checked against ZKTime punches, and a manual "Verified" QA flag.
+ */
+export async function ledger(requester: AuthUser, departmentId: string | undefined, month: number, year: number) {
+  let deptId = departmentId;
+  if (requester.role === Role.HOD) {
+    deptId = requester.departmentId ?? "__none__";
+  } else if (requester.role !== Role.HR_ADMIN) {
+    throw new HttpError(403, "forbidden");
+  }
+
+  const { from, to } = otPeriodRange(month, year);
+  const requests = await prisma.overtimeRequest.findMany({
+    where: {
+      status: "APPROVED",
+      workCompleted: true,
+      cancelled: false,
+      date: { gte: from, lte: to },
+      ...(deptId ? { staff: { departmentId: deptId } } : {}),
+    },
+    orderBy: [{ date: "asc" }, { staffId: "asc" }],
+    include: { staff: { select: { id: true, staffId: true, fullName: true, departmentId: true } } },
+  });
+
+  return Promise.all(
+    requests.map(async (r) => {
+      const rate = await currentRate(r.staff.departmentId, r.date);
+      const rateValue = rateValueFor(rate, r.date, r.isHoliday);
+      const hours = hoursBetween(r.timeIn, r.timeOut);
+      return {
+        staffId: r.staff.id,
+        staffCode: r.staff.staffId,
+        fullName: r.staff.fullName,
+        date: r.date,
+        timeIn: r.timeIn,
+        timeOut: r.timeOut,
+        hours,
+        isHoliday: r.isHoliday,
+        description: r.reason,
+        rateValue,
+        cost: rateValue !== null ? hours * rateValue : null,
+      };
+    })
+  );
 }

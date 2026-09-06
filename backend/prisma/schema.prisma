@@ -96,6 +96,24 @@ model Department {
   updatedAt  DateTime @updatedAt
 }
 
+/// Working-hours framework, mirroring the legacy v7.0 "Staff Groups" concept
+/// (e.g. "New Framework Staff": 06:45 sign-in, 8h/day vs "Old Framework
+/// Staff": 06:45 sign-in, 6h/day). Drives attendance late-arrival and
+/// overtime-threshold flagging per staff member instead of one global shift.
+model StaffGroup {
+  id            String  @id @default(cuid())
+  name          String  @unique
+  frameworkType String
+  /// "HH:mm" — parsed the same way as env.ts's shift settings.
+  signInTime    String
+  workingHours  Int
+  /// Group-level overtime cost capping (% of basic salary) — recorded from
+  /// the legacy settings but not yet enforced; salary isn't stored as a
+  /// plain numeric field this can be computed against (see StaffBankDetail).
+  groupCapping  Boolean @default(false)
+  staff         Staff[]
+}
+
 model Staff {
   id               String   @id @default(cuid())
   staffId          String   @unique
@@ -113,6 +131,11 @@ model Staff {
 
   departmentId       String
   department         Department @relation("StaffDepartment", fields: [departmentId], references: [id])
+  /// Working-hours framework (sign-in time, standard daily hours) used for
+  /// attendance late-arrival/overtime-threshold flagging. Nullable — staff
+  /// with no group assigned fall back to env.ts's default shift settings.
+  staffGroupId       String?
+  staffGroup         StaffGroup? @relation(fields: [staffGroupId], references: [id])
   designation        String
   employmentType     EmploymentType
   dateJoined         DateTime
@@ -233,14 +256,21 @@ model OvertimeRate {
   effectiveFrom DateTime   @default(now())
 }
 
+/// Pre-approval model, matching the legacy v7.0 workflow: staff request
+/// overtime for a planned time window BEFORE doing the work, a supervisor
+/// approves it, the staff member does the work, then explicitly marks it
+/// "Work Completed" — hours/cost for payroll only count once completed
+/// (an approved-but-never-done slot is not paid).
 model OvertimeRequest {
-  id        String   @id @default(cuid())
-  staffId   String
-  staff     Staff    @relation("OvertimeStaff", fields: [staffId], references: [id])
-  date      DateTime
-  hours     Decimal  @db.Decimal(5, 2)
-  reason    String
-  notes     String?
+  id      String   @id @default(cuid())
+  staffId String
+  staff   Staff    @relation("OvertimeStaff", fields: [staffId], references: [id])
+  /// Calendar date of the slot, derived from timeIn at submission.
+  date    DateTime
+  timeIn  DateTime
+  timeOut DateTime
+  reason  String
+  notes   String?
   /// Weekday/weekend is derived from `date`; holiday must be flagged
   /// explicitly since it isn't purely a function of the calendar date.
   isHoliday Boolean  @default(false)
@@ -252,6 +282,15 @@ model OvertimeRequest {
   hrReviewerId  String?
   hrReviewer    Staff?         @relation("OvertimeHrReviewer", fields: [hrReviewerId], references: [id])
   hrReviewedAt  DateTime?
+
+  /// Staff-initiated withdrawal — distinct from HOD/HR rejecting it.
+  cancelled   Boolean   @default(false)
+  cancelledAt DateTime?
+
+  /// Set by the staff member after actually doing the approved work.
+  /// Only APPROVED + completed + not cancelled slots count for payroll.
+  workCompleted   Boolean   @default(false)
+  workCompletedAt DateTime?
 
   createdAt DateTime @default(now())
 }
@@ -343,6 +382,10 @@ model LeaveType {
   /// for a v1; a dedicated accrual-rule engine can replace this later.
   accrualRule String?
   isCustom    Boolean @default(false)
+  /// Whether approving a request of this type deducts from the staff
+  /// member's balance (false for e.g. Unpaid Leave). An explicit flag
+  /// instead of matching on the name string.
+  deductsBalance Boolean @default(true)
 
   balances LeaveBalance[]
   requests LeaveRequest[]

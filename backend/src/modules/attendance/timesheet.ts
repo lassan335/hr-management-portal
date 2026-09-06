@@ -9,6 +9,34 @@ export interface DayTimesheet {
   lateArrival: boolean;
   earlyDeparture: boolean;
   overtimeHours: number;
+  /** On a weekend/holiday, attendance counts once >= 3h is worked that day.
+   * NOTE: "holiday" here is approximated as Sat/Sun — there's no separate
+   * designated-holiday calendar yet (the legacy portal's "Holidays /
+   * Non-Working Days" list), so a holiday falling on a weekday isn't
+   * detected. Add a Holiday model to close that gap if it matters. */
+  holidayAttendanceEligible: boolean;
+  /** Uniform 8h/day threshold before any worked time counts as
+   * overtime-eligible — distinct from `overtimeHours` above, which is the
+   * surplus over this staff member's own group's standard daily hours (may
+   * be 6h for some groups). A staff member on a 6h-standard group could
+   * show overtimeHours > 0 while still not being "eligible" until 8h. */
+  overtimeEligible: boolean;
+}
+
+export interface ShiftSettings {
+  /** "HH:mm" sign-in time. */
+  shiftStart: string;
+  /** Standard hours per day — shift end is derived as shiftStart + this. */
+  standardDailyHours: number;
+}
+
+/** Resolves a staff member's shift settings from their StaffGroup, falling
+ * back to env.ts's defaults if they aren't assigned to one. */
+export function shiftSettingsFor(staffGroup: { signInTime: string; workingHours: number } | null): ShiftSettings {
+  if (staffGroup) {
+    return { shiftStart: staffGroup.signInTime, standardDailyHours: staffGroup.workingHours };
+  }
+  return { shiftStart: env.defaultShiftStart, standardDailyHours: env.defaultStandardDailyHours };
 }
 
 function parseShiftTime(dayDate: Date, hhmm: string): Date {
@@ -19,16 +47,18 @@ function parseShiftTime(dayDate: Date, hhmm: string): Date {
 }
 
 /** Pairs chronological IN/OUT punches per calendar day into worked sessions,
- * and flags late arrival / early departure / overtime against the standard
- * shift window in env.ts. Unpaired trailing IN punches (still clocked in,
- * or a missed OUT) are ignored for hours but don't crash the calculation.
+ * and flags late arrival / early departure / overtime against the given
+ * shift window (see shiftSettingsFor — resolved per staff member from their
+ * StaffGroup). Unpaired trailing IN punches (still clocked in, or a missed
+ * OUT) are ignored for hours but don't crash the calculation.
  *
  * `punchType` is typed as a plain string (not @hr/shared's PunchType) because
  * callers pass Prisma query results — Prisma generates its own nominally
  * distinct enum type with identical string values, so comparing by value
  * here avoids a needless cast at every call site. */
 export function buildTimesheet(
-  entries: { timestamp: Date; punchType: string }[]
+  entries: { timestamp: Date; punchType: string }[],
+  shift: ShiftSettings
 ): DayTimesheet[] {
   const byDay = new Map<string, { timestamp: Date; punchType: string }[]>();
   for (const e of entries) {
@@ -57,9 +87,11 @@ export function buildTimesheet(
       }
     }
 
-    const shiftStart = parseShiftTime(sorted[0].timestamp, env.shiftStart);
-    const shiftEnd = parseShiftTime(sorted[0].timestamp, env.shiftEnd);
+    const shiftStart = parseShiftTime(sorted[0].timestamp, shift.shiftStart);
+    const shiftEnd = new Date(shiftStart.getTime() + shift.standardDailyHours * 3600000);
     const graceMs = env.gracePeriodMinutes * 60000;
+    const dayOfWeek = sorted[0].timestamp.getDay();
+    const isWeekendOrHoliday = dayOfWeek === 0 || dayOfWeek === 6;
 
     days.push({
       date,
@@ -68,7 +100,9 @@ export function buildTimesheet(
       hoursWorked: Math.round(hoursWorked * 100) / 100,
       lateArrival: firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false,
       earlyDeparture: lastOut ? lastOut.getTime() < shiftEnd.getTime() - graceMs : false,
-      overtimeHours: Math.max(0, Math.round((hoursWorked - env.standardDailyHours) * 100) / 100),
+      overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),
+      holidayAttendanceEligible: isWeekendOrHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,
+      overtimeEligible: hoursWorked >= env.overtimeEligibleThresholdHours,
     });
   }
 

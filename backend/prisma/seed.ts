@@ -15,13 +15,35 @@ async function main() {
     )
   );
 
+  // --- Staff groups ----------------------------------------------------------
+  // Mirrors the legacy portal's "Staff Groups" settings page: two working-hours
+  // frameworks, each with its own sign-in time and standard daily hours, used
+  // by the attendance timesheet in place of the school-wide default shift.
+  const [newFramework, oldFramework] = await Promise.all([
+    prisma.staffGroup.upsert({
+      where: { name: "New Framework" },
+      create: { name: "New Framework", frameworkType: "New", signInTime: "06:45", workingHours: 8 },
+      update: {},
+    }),
+    prisma.staffGroup.upsert({
+      where: { name: "Old Framework" },
+      create: { name: "Old Framework", frameworkType: "Old", signInTime: "06:45", workingHours: 6 },
+      update: {},
+    }),
+  ]);
+
   // --- Leave types -------------------------------------------------------
+  // Names match the legacy portal's real leave types ("View My Leave
+  // Requests" screenshot); deductsBalance replaces the old name-based
+  // "unpaid" string check so any leave type can opt out of balance deduction.
   const leaveTypeDefs = [
-    { name: "Sick", accrualRule: "1 day/month" },
-    { name: "Annual", accrualRule: "1.5 days/month" },
-    { name: "Unpaid", accrualRule: "none" },
-    { name: "Maternity/Paternity", accrualRule: "one-time grant" },
-    { name: "Study Leave", accrualRule: "school-configurable", isCustom: true },
+    { name: "Annual Leave", accrualRule: "1.5 days/month", deductsBalance: true },
+    { name: "Sick Leave With MC", accrualRule: "1 day/month", deductsBalance: true },
+    { name: "Sick Leave Without MC", accrualRule: "1 day/month", deductsBalance: true },
+    { name: "Family Responsibility Leave", accrualRule: "3 days/year", deductsBalance: true },
+    { name: "Unpaid Leave", accrualRule: "none", deductsBalance: false },
+    { name: "Maternity/Paternity Leave", accrualRule: "one-time grant", deductsBalance: true },
+    { name: "Study Leave", accrualRule: "school-configurable", isCustom: true, deductsBalance: true },
   ];
   const leaveTypes: Record<string, { id: string }> = {};
   for (const lt of leaveTypeDefs) {
@@ -61,6 +83,8 @@ async function main() {
   // Device user ids 1001/1002 match backend/prisma/seed-data/zktime-sample-export.csv
   // so the ZKTime import can be demoed end to end; 9999 in that file is left
   // deliberately unmatched to exercise the admin review queue.
+  // staffGroupId of null leaves the staff member on the school-wide default
+  // shift (env SHIFT_START/STANDARD_DAILY_HOURS) to demo that fallback too.
   const staffDefs = [
     {
       staffId: "KS-0001",
@@ -70,6 +94,7 @@ async function main() {
       designation: "HR Manager",
       googleEmail: `hr.admin@${DOMAIN}`,
       deviceUserId: null,
+      staffGroupId: null,
     },
     {
       staffId: "KS-0002",
@@ -79,6 +104,7 @@ async function main() {
       designation: "Head of Mathematics",
       googleEmail: `shifau@${DOMAIN}`,
       deviceUserId: null,
+      staffGroupId: newFramework.id,
     },
     {
       staffId: "KS-0003",
@@ -88,6 +114,7 @@ async function main() {
       designation: "Head of Science",
       googleEmail: `rasheeda@${DOMAIN}`,
       deviceUserId: null,
+      staffGroupId: newFramework.id,
     },
     {
       staffId: "KS-0004",
@@ -97,6 +124,7 @@ async function main() {
       designation: "Mathematics Teacher",
       googleEmail: `arasheed@${DOMAIN}`,
       deviceUserId: "1001",
+      staffGroupId: newFramework.id,
     },
     {
       staffId: "KS-0005",
@@ -106,6 +134,7 @@ async function main() {
       designation: "Science Teacher",
       googleEmail: `mshifa@${DOMAIN}`,
       deviceUserId: "1002",
+      staffGroupId: newFramework.id,
     },
     {
       staffId: "KS-0006",
@@ -115,6 +144,7 @@ async function main() {
       designation: "English Teacher",
       googleEmail: `hwaheed@${DOMAIN}`,
       deviceUserId: null,
+      staffGroupId: oldFramework.id,
     },
     {
       staffId: "KS-0007",
@@ -124,6 +154,7 @@ async function main() {
       designation: "Front Office Assistant",
       googleEmail: `awisam@${DOMAIN}`,
       deviceUserId: null,
+      staffGroupId: oldFramework.id,
     },
   ];
 
@@ -148,6 +179,7 @@ async function main() {
         employmentType: "PERMANENT",
         dateJoined: new Date(2020, 0, 1),
         deviceUserId: s.deviceUserId,
+        staffGroupId: s.staffGroupId,
       },
       update: {},
     });
@@ -173,8 +205,9 @@ async function main() {
   // --- Leave balances for current year --------------------------------------
   for (const code of Object.keys(staffByCode)) {
     for (const [name, amount] of [
-      ["Sick", 12],
-      ["Annual", 18],
+      ["Annual Leave", 18],
+      ["Sick Leave With MC", 12],
+      ["Sick Leave Without MC", 6],
       ["Study Leave", 5],
     ] as const) {
       await prisma.leaveBalance.upsert({
@@ -187,23 +220,57 @@ async function main() {
     }
   }
 
-  // --- Sample overtime requests ----------------------------------------------
+  // --- Sample overtime requests (pre-approval workflow) -----------------------
+  // Covers the states the legacy portal tracks: pending approval, approved but
+  // work not yet done, approved + completed (payable, appears in the ledger),
+  // and cancelled.
+  const otMonth = new Date().getMonth();
   await prisma.overtimeRequest.createMany({
     data: [
       {
         staffId: staffByCode["KS-0004"].id,
-        date: new Date(year, new Date().getMonth(), 3),
-        hours: 2,
+        date: new Date(year, otMonth, 3),
+        timeIn: new Date(year, otMonth, 3, 15, 0),
+        timeOut: new Date(year, otMonth, 3, 17, 0),
         reason: "Extra exam prep supervision",
         status: "PENDING_HOD",
       },
       {
+        staffId: staffByCode["KS-0004"].id,
+        date: new Date(year, otMonth, 6),
+        timeIn: new Date(year, otMonth, 6, 15, 0),
+        timeOut: new Date(year, otMonth, 6, 18, 0),
+        reason: "Weekend club coaching",
+        status: "APPROVED",
+        hodReviewerId: staffByCode["KS-0002"].id,
+        hodReviewedAt: new Date(),
+        hrReviewerId: staffByCode["KS-0001"].id,
+        hrReviewedAt: new Date(),
+      },
+      {
         staffId: staffByCode["KS-0005"].id,
-        date: new Date(year, new Date().getMonth(), 5),
-        hours: 3,
+        date: new Date(year, otMonth, 5),
+        timeIn: new Date(year, otMonth, 5, 14, 0),
+        timeOut: new Date(year, otMonth, 5, 17, 0),
         reason: "Science fair setup",
         status: "APPROVED",
+        workCompleted: true,
+        workCompletedAt: new Date(),
         hodReviewerId: staffByCode["KS-0003"].id,
+        hodReviewedAt: new Date(),
+        hrReviewerId: staffByCode["KS-0001"].id,
+        hrReviewedAt: new Date(),
+      },
+      {
+        staffId: staffByCode["KS-0006"].id,
+        date: new Date(year, otMonth, 2),
+        timeIn: new Date(year, otMonth, 2, 15, 0),
+        timeOut: new Date(year, otMonth, 2, 17, 0),
+        reason: "Library stocktake (cancelled)",
+        status: "APPROVED",
+        cancelled: true,
+        cancelledAt: new Date(),
+        hodReviewerId: staffByCode["KS-0002"].id,
         hodReviewedAt: new Date(),
         hrReviewerId: staffByCode["KS-0001"].id,
         hrReviewedAt: new Date(),
@@ -215,7 +282,7 @@ async function main() {
   await prisma.leaveRequest.create({
     data: {
       staffId: staffByCode["KS-0006"].id,
-      leaveTypeId: leaveTypes["Sick"].id,
+      leaveTypeId: leaveTypes["Sick Leave With MC"].id,
       startDate: new Date(year, new Date().getMonth(), 10),
       endDate: new Date(year, new Date().getMonth(), 11),
       reason: "Flu",
@@ -240,6 +307,7 @@ async function main() {
 
   console.log("Seed complete.");
   console.log("Dev-login staff IDs: KS-0001 (HR_ADMIN), KS-0002/KS-0003 (HOD), KS-0004..KS-0007 (STAFF)");
+  console.log("Staff groups: New Framework (KS-0002, KS-0003, KS-0004, KS-0005), Old Framework (KS-0006, KS-0007), KS-0001 on default shift");
   console.log("Sample ZKTime export ready at backend/prisma/seed-data/zktime-sample-export.csv");
   console.log("  (device 1001 -> KS-0004, 1002 -> KS-0005, 9999 -> unmatched, for the review queue demo)");
 }

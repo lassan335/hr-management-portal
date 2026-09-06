@@ -46,6 +46,20 @@ export function overtimeRouter(): Router {
   );
 
   router.post(
+    "/:id/cancel",
+    asyncHandler(async (req, res) => {
+      res.json(await service.cancelRequest(req.user!, String(req.params.id), requestMeta(req)));
+    })
+  );
+
+  router.post(
+    "/:id/complete",
+    asyncHandler(async (req, res) => {
+      res.json(await service.completeWork(req.user!, String(req.params.id), requestMeta(req)));
+    })
+  );
+
+  router.post(
     "/rates",
     requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
@@ -87,6 +101,15 @@ export function overtimeRouter(): Router {
     asyncHandler(async (req, res) => {
       const query = dashboardQuerySchema.parse(req.query);
       res.json(await service.departmentDashboard(req.user!, query.departmentId, query.month, query.year));
+    })
+  );
+
+  router.get(
+    "/ledger",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = dashboardQuerySchema.parse(req.query);
+      res.json(await service.ledger(req.user!, query.departmentId, query.month, query.year));
     })
   );
 

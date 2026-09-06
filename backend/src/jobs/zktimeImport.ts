@@ -1,4 +1,5 @@
 import fs from "fs";
+import crypto from "crypto";
 import path from "path";
 import { parse as parseCsv } from "csv-parse/sync";
 import ExcelJS from "exceljs";
@@ -16,7 +17,14 @@ export interface ImportResult {
   processedCount: number;
   matchedCount: number;
   unmatchedCount: number;
+  duplicate?: boolean;
 }
+
+// Applied regardless of how the file arrived (watched folder or manual
+// upload) — the manual-upload multer config has its own limit too, but the
+// watcher has no equivalent gate on its own, so it lives here where both
+// paths go through it.
+const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 
 // ZKTime 5.0 exports vary by device/firmware configuration, so header
 // matching is case-insensitive and tries several common column names rather
@@ -64,6 +72,10 @@ function parseTimestamp(raw: unknown): Date | null {
     return isNaN(d.getTime()) ? null : d;
   }
   return null;
+}
+
+function hashFile(filePath: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
 export async function readRows(filePath: string): Promise<{ headers: string[]; rows: unknown[][] }> {
@@ -131,17 +143,69 @@ export function toParsedPunches(headers: string[], rows: unknown[][]): { punches
  * Shared entry point for both the file-watcher and the manual admin upload
  * endpoint — one code path, so behavior never diverges between the two.
  * Unmatched device IDs are recorded in the review queue, never dropped.
+ *
+ * Guards against re-processing the same export twice (e.g. a human
+ * re-uploading a file they already imported) via a content hash independent
+ * of which directory/path the file arrived through, and always creates an
+ * AttendanceSyncLog row — even on failure — so a bad import is visible in
+ * the admin UI instead of only a server log line.
  */
 export async function processZKTimeFile(filePath: string, importedBy: string | null = null): Promise<ImportResult> {
   const fileName = path.basename(filePath);
-  const { headers, rows } = await readRows(filePath);
-  const { punches } = toParsedPunches(headers, rows);
+
+  const sizeBytes = fs.statSync(filePath).size;
+  if (sizeBytes > MAX_IMPORT_BYTES) {
+    const syncLog = await prisma.attendanceSyncLog.create({
+      data: {
+        fileName,
+        processedCount: 0,
+        matchedCount: 0,
+        unmatchedCount: 0,
+        importedBy,
+        failed: true,
+        failureReason: `File too large (${sizeBytes} bytes, max ${MAX_IMPORT_BYTES}).`,
+      },
+    });
+    throw Object.assign(new Error("file_too_large"), { syncLogId: syncLog.id });
+  }
+
+  const fileHash = hashFile(filePath);
+  const existing = await prisma.attendanceSyncLog.findFirst({ where: { fileHash, failed: false } });
+  if (existing) {
+    return {
+      syncLogId: existing.id,
+      processedCount: existing.processedCount,
+      matchedCount: existing.matchedCount,
+      unmatchedCount: existing.unmatchedCount,
+      duplicate: true,
+    };
+  }
+
+  let punches: ParsedPunch[];
+  try {
+    const { headers, rows } = await readRows(filePath);
+    punches = toParsedPunches(headers, rows).punches;
+  } catch (err) {
+    await prisma.attendanceSyncLog.create({
+      data: {
+        fileName,
+        fileHash,
+        processedCount: 0,
+        matchedCount: 0,
+        unmatchedCount: 0,
+        importedBy,
+        failed: true,
+        failureReason: (err as Error).message,
+      },
+    });
+    throw err;
+  }
 
   let matchedCount = 0;
   let unmatchedCount = 0;
 
   const syncLog = await prisma.attendanceSyncLog.create({
-    data: { fileName, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0, importedBy },
+    data: { fileName, fileHash, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0, importedBy },
   });
 
   for (const punch of punches) {

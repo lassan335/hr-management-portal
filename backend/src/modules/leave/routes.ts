@@ -34,7 +34,7 @@ export function leaveRouter(): Router {
     requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const input = leaveTypeSchema.parse(req.body);
-      res.status(201).json(await service.createLeaveType(req.user!, input));
+      res.status(201).json(await service.createLeaveType(req.user!, input, requestMeta(req)));
     })
   );
 
@@ -44,7 +44,7 @@ export function leaveRouter(): Router {
     requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const input = termCalendarSchema.parse(req.body);
-      res.status(201).json(await service.createTermCalendarEntry(req.user!, input));
+      res.status(201).json(await service.createTermCalendarEntry(req.user!, input, requestMeta(req)));
     })
   );
 
@@ -84,7 +84,7 @@ export function leaveRouter(): Router {
     requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const input = balanceSchema.parse(req.body);
-      res.status(201).json(await service.setBalance(req.user!, input));
+      res.status(201).json(await service.setBalance(req.user!, input, requestMeta(req)));
     })
   );
 

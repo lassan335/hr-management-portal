@@ -77,6 +77,8 @@ enum NotificationType {
   EDIT_REQUEST_REJECTED
   ATTENDANCE_CORRECTION_SUBMITTED
   ATTENDANCE_CORRECTION_REVIEWED
+  ATTENDANCE_IMPORT_FAILED
+  ATTENDANCE_DEVICE_RESOLVED
 }
 
 model Department {
@@ -278,12 +280,23 @@ model TimeEntry {
 model AttendanceSyncLog {
   id             String                     @id @default(cuid())
   fileName       String
+  /// SHA-256 of the file content — a second line of defense against
+  /// importing the same export twice (manual upload + watcher racing, or a
+  /// human re-uploading the same file), independent of which directory it
+  /// arrived through.
+  fileHash       String?
   processedCount Int
   matchedCount   Int
   unmatchedCount Int
+  /// Set when parsing failed entirely (malformed columns, unreadable file) —
+  /// surfaced in the admin UI instead of failing silently.
+  failed         Boolean                    @default(false)
+  failureReason  String?
   importedBy     String?
   importedAt     DateTime                   @default(now())
   unmatchedEntries AttendanceUnmatchedEntry[]
+
+  @@index([fileHash])
 }
 
 /// Rows from an import run whose device_user_id didn't match any staff —

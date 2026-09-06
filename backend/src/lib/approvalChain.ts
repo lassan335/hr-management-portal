@@ -14,9 +14,18 @@ export function nextApprovalStatus(params: {
   current: ApprovalStatusValue;
   reviewer: AuthUser;
   requestDepartmentId: string;
+  requestOwnerStaffId: string;
   decision: "APPROVE" | "REJECT";
 }): ApprovalStatusValue {
-  const { current, reviewer, requestDepartmentId, decision } = params;
+  const { current, reviewer, requestDepartmentId, requestOwnerStaffId, decision } = params;
+
+  // No one reviews their own request — including HR_ADMIN, whose approval at
+  // the PENDING_HOD stage otherwise fast-tracks straight to APPROVED with no
+  // second reviewer ever involved. A HOD is likewise blocked from clearing
+  // the first stage of their own submission.
+  if (reviewer.staffId === requestOwnerStaffId) {
+    throw new HttpError(403, "cannot_review_own_request");
+  }
 
   if (current === "APPROVED" || current === "REJECTED") {
     throw new HttpError(409, "already_reviewed");

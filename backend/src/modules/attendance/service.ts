@@ -12,6 +12,8 @@ import { buildTimesheet } from "./timesheet";
 import type { correctionSchema } from "./validation";
 import type { z } from "zod";
 
+type AuditMeta = { ipAddress?: string; userAgent?: string };
+
 export async function clockPunch(actor: AuthUser, override?: PunchType) {
   let punchType = override;
   if (!punchType) {
@@ -92,24 +94,38 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
   return rows;
 }
 
-export async function importFile(actor: AuthUser, filePath: string) {
-  const result = await processZKTimeFile(filePath, actor.staffId);
-  await recordAudit({
-    actorId: actor.staffId,
-    action: "ATTENDANCE_IMPORT",
-    entity: "AttendanceSyncLog",
-    entityId: result.syncLogId,
-    after: result,
-  });
-
-  // Move the uploaded file out of the incoming/ drop folder so the watcher
-  // (which also monitors that folder) never re-processes it.
-  const processedDir = path.join(path.dirname(filePath), "processed");
-  fs.mkdirSync(processedDir, { recursive: true });
-  const dest = path.join(processedDir, `${Date.now()}-${path.basename(filePath)}`);
-  if (fs.existsSync(filePath)) fs.renameSync(filePath, dest);
-
-  return result;
+export async function importFile(actor: AuthUser, filePath: string, meta: AuditMeta = {}) {
+  let succeeded = false;
+  try {
+    const result = await processZKTimeFile(filePath, actor.staffId);
+    succeeded = true;
+    await recordAudit({
+      actorId: actor.staffId,
+      action: "ATTENDANCE_IMPORT",
+      entity: "AttendanceSyncLog",
+      entityId: result.syncLogId,
+      after: result,
+      ...meta,
+    });
+    return result;
+  } catch (err) {
+    await recordAudit({
+      actorId: actor.staffId,
+      action: "ATTENDANCE_IMPORT_FAILED",
+      entity: "AttendanceSyncLog",
+      entityId: path.basename(filePath),
+      after: { error: (err as Error).message },
+      ...meta,
+    });
+    throw err;
+  } finally {
+    // Archive out of the upload folder either way, so a failed/duplicate
+    // upload doesn't just sit there indefinitely.
+    const archiveDir = path.join(path.dirname(filePath), succeeded ? "processed" : "failed");
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const dest = path.join(archiveDir, `${Date.now()}-${path.basename(filePath)}`);
+    if (fs.existsSync(filePath)) fs.renameSync(filePath, dest);
+  }
 }
 
 export async function listSyncLogs(requester: AuthUser) {
@@ -128,11 +144,13 @@ export async function listUnmatched(requester: AuthUser) {
 
 /** Links a device user id to a staff record going forward, and retroactively
  * resolves every still-unresolved unmatched punch sharing that device id. */
-export async function resolveUnmatched(actor: AuthUser, deviceUserId: string, staffId: string) {
+export async function resolveUnmatched(actor: AuthUser, deviceUserId: string, staffId: string, meta: AuditMeta = {}) {
   if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
 
   const staff = await prisma.staff.findUnique({ where: { id: staffId } });
   if (!staff) throw new HttpError(404, "staff_not_found");
+
+  const existingDevice = await prisma.attendanceDevice.findUnique({ where: { deviceUserId } });
 
   await prisma.attendanceDevice.upsert({
     where: { deviceUserId },
@@ -160,13 +178,27 @@ export async function resolveUnmatched(actor: AuthUser, deviceUserId: string, st
     action: "ATTENDANCE_UNMATCHED_RESOLVED",
     entity: "AttendanceDevice",
     entityId: deviceUserId,
+    before: { previousStaffId: existingDevice?.staffId ?? null },
     after: { staffId, resolvedCount: pending.length },
+    ...meta,
+  });
+  await notify({
+    staffId,
+    type: NotificationType.ATTENDANCE_DEVICE_RESOLVED,
+    message: `${pending.length} historical attendance punch(es) from device "${deviceUserId}" were linked to your record.`,
   });
 
   return { resolvedCount: pending.length };
 }
 
-export async function submitCorrection(actor: AuthUser, input: z.infer<typeof correctionSchema>) {
+export async function submitCorrection(actor: AuthUser, input: z.infer<typeof correctionSchema>, meta: AuditMeta = {}) {
+  if (input.timeEntryId) {
+    const entry = await prisma.timeEntry.findUnique({ where: { id: input.timeEntryId } });
+    if (!entry || entry.staffId !== actor.staffId) {
+      throw new HttpError(400, "time_entry_not_owned");
+    }
+  }
+
   const request = await prisma.attendanceCorrectionRequest.create({
     data: {
       staffId: actor.staffId,
@@ -176,6 +208,14 @@ export async function submitCorrection(actor: AuthUser, input: z.infer<typeof co
       requestedTime: input.requestedTime,
       reason: input.reason,
     },
+  });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "ATTENDANCE_CORRECTION_SUBMITTED",
+    entity: "AttendanceCorrectionRequest",
+    entityId: request.id,
+    after: { date: input.date, requestedPunchType: input.requestedPunchType },
+    ...meta,
   });
   await notify({
     staffId: actor.staffId,
@@ -206,7 +246,12 @@ export async function listCorrections(requester: AuthUser) {
   });
 }
 
-export async function reviewCorrection(actor: AuthUser, requestId: string, decision: "APPROVE" | "REJECT") {
+export async function reviewCorrection(
+  actor: AuthUser,
+  requestId: string,
+  decision: "APPROVE" | "REJECT",
+  meta: AuditMeta = {}
+) {
   const request = await prisma.attendanceCorrectionRequest.findUnique({
     where: { id: requestId },
     include: { staff: { select: { departmentId: true } } },
@@ -217,6 +262,7 @@ export async function reviewCorrection(actor: AuthUser, requestId: string, decis
     current: request.status as any,
     reviewer: actor,
     requestDepartmentId: request.staff.departmentId,
+    requestOwnerStaffId: request.staffId,
     decision,
   });
 
@@ -242,6 +288,7 @@ export async function reviewCorrection(actor: AuthUser, requestId: string, decis
       action: `ATTENDANCE_CORRECTION_${newStatus}`,
       entity: "AttendanceCorrectionRequest",
       entityId: requestId,
+      ...meta,
     });
     await notify({
       staffId: request.staffId,

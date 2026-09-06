@@ -96,6 +96,7 @@ export async function reviewRequest(
     current: request.status as any,
     reviewer: actor,
     requestDepartmentId: request.staff.departmentId,
+    requestOwnerStaffId: request.staffId,
     decision,
   });
 

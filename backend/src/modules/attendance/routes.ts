@@ -5,6 +5,7 @@ import multer from "multer";
 import { PunchType, Role } from "@hr/shared";
 import { authenticate } from "../../lib/auth";
 import { requireRole } from "../../lib/rbac";
+import { requestMeta } from "../../lib/audit";
 import * as service from "./service";
 import {
   clockSchema,
@@ -15,7 +16,12 @@ import {
   reviewSchema,
 } from "./validation";
 
-const IMPORT_DIR = path.join(__dirname, "..", "..", "..", "import-watch", "incoming");
+// Deliberately NOT the same directory the file-watcher monitors
+// (import-watch/incoming) — sharing one folder let a manual upload and the
+// watcher's own pickup race to import the same file twice (finsec review,
+// T-2026-09-06-020). This upload is processed synchronously by the request
+// handler below, so it never needs to be watched.
+const IMPORT_DIR = path.join(__dirname, "..", "..", "..", "import-watch", "manual-uploads");
 
 const importUpload = multer({
   storage: multer.diskStorage({
@@ -90,7 +96,7 @@ export function attendanceRouter(): Router {
     importUpload.single("file"),
     asyncHandler(async (req, res) => {
       if (!req.file) return res.status(400).json({ error: "file required" });
-      res.status(201).json(await service.importFile(req.user!, req.file.path));
+      res.status(201).json(await service.importFile(req.user!, req.file.path, requestMeta(req)));
     })
   );
 
@@ -115,7 +121,7 @@ export function attendanceRouter(): Router {
     requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const { staffId } = resolveUnmatchedSchema.parse(req.body);
-      res.json(await service.resolveUnmatched(req.user!, String(req.params.deviceUserId), staffId));
+      res.json(await service.resolveUnmatched(req.user!, String(req.params.deviceUserId), staffId, requestMeta(req)));
     })
   );
 
@@ -123,7 +129,7 @@ export function attendanceRouter(): Router {
     "/corrections",
     asyncHandler(async (req, res) => {
       const input = correctionSchema.parse(req.body);
-      res.status(201).json(await service.submitCorrection(req.user!, input));
+      res.status(201).json(await service.submitCorrection(req.user!, input, requestMeta(req)));
     })
   );
 
@@ -139,7 +145,7 @@ export function attendanceRouter(): Router {
     requireRole(Role.HOD, Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const { decision } = reviewSchema.parse(req.body);
-      res.json(await service.reviewCorrection(req.user!, String(req.params.id), decision));
+      res.json(await service.reviewCorrection(req.user!, String(req.params.id), decision, requestMeta(req)));
     })
   );
 

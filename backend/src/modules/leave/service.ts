@@ -18,18 +18,40 @@ export async function listLeaveTypes() {
   return prisma.leaveType.findMany({ orderBy: { name: "asc" } });
 }
 
-export async function createLeaveType(actor: AuthUser, input: z.infer<typeof leaveTypeSchema>) {
+export async function createLeaveType(actor: AuthUser, input: z.infer<typeof leaveTypeSchema>, meta: AuditMeta = {}) {
   if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
-  return prisma.leaveType.create({ data: input });
+  const leaveType = await prisma.leaveType.create({ data: input });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "LEAVE_TYPE_CREATED",
+    entity: "LeaveType",
+    entityId: leaveType.id,
+    after: input,
+    ...meta,
+  });
+  return leaveType;
 }
 
 export async function listTermCalendar() {
   return prisma.termCalendar.findMany({ orderBy: { startDate: "asc" } });
 }
 
-export async function createTermCalendarEntry(actor: AuthUser, input: z.infer<typeof termCalendarSchema>) {
+export async function createTermCalendarEntry(
+  actor: AuthUser,
+  input: z.infer<typeof termCalendarSchema>,
+  meta: AuditMeta = {}
+) {
   if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
-  return prisma.termCalendar.create({ data: input });
+  const entry = await prisma.termCalendar.create({ data: input });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "TERM_CALENDAR_CREATED",
+    entity: "TermCalendar",
+    entityId: entry.id,
+    after: input,
+    ...meta,
+  });
+  return entry;
 }
 
 async function findBlockingTerm(startDate: Date, endDate: Date) {
@@ -135,6 +157,7 @@ export async function reviewLeaveRequest(
     current: request.status as any,
     reviewer: actor,
     requestDepartmentId: request.staff.departmentId,
+    requestOwnerStaffId: request.staffId,
     decision,
   });
 
@@ -156,22 +179,32 @@ export async function reviewLeaveRequest(
   });
 
   if (newStatus === "APPROVED") {
+    // Re-check the term-calendar block at approval time too — HR may have
+    // added a block after this request was already pending.
+    const blockingTerm = await findBlockingTerm(request.startDate, request.endDate);
+    if (blockingTerm) {
+      throw new HttpError(409, `leave_blocked_by_term:${blockingTerm.termName}`);
+    }
+
     const requestedDays = inclusiveDays(request.startDate, new Date(request.endDate));
     const year = request.startDate.getFullYear();
     if (request.leaveType.name.toLowerCase() !== "unpaid") {
-      const balance = await prisma.leaveBalance.findUnique({
-        where: { staffId_leaveTypeId_year: { staffId: request.staffId, leaveTypeId: request.leaveTypeId, year } },
+      // Atomic compare-and-decrement — a plain read-then-write here would let
+      // two concurrent approvals for the same staff/leaveType/year both pass
+      // their individual checks before either write lands, overdrawing the
+      // balance (the same TOCTOU class fixed for staff edit-requests in T-019).
+      const result = await prisma.leaveBalance.updateMany({
+        where: {
+          staffId: request.staffId,
+          leaveTypeId: request.leaveTypeId,
+          year,
+          balanceDays: { gte: requestedDays },
+        },
+        data: { balanceDays: { decrement: requestedDays } },
       });
-      const available = balance ? Number(balance.balanceDays) : 0;
-      if (available < requestedDays) {
-        // Balance changed since submission (e.g. another approved request in
-        // between) — do not silently overdraw it.
+      if (result.count !== 1) {
         throw new HttpError(409, "insufficient_balance_at_approval");
       }
-      await prisma.leaveBalance.update({
-        where: { staffId_leaveTypeId_year: { staffId: request.staffId, leaveTypeId: request.leaveTypeId, year } },
-        data: { balanceDays: available - requestedDays },
-      });
     }
   }
 
@@ -212,7 +245,7 @@ export async function getBalances(requester: AuthUser, targetStaffId: string) {
   });
 }
 
-export async function setBalance(actor: AuthUser, input: z.infer<typeof balanceSchema>) {
+export async function setBalance(actor: AuthUser, input: z.infer<typeof balanceSchema>, meta: AuditMeta = {}) {
   if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
   const balance = await prisma.leaveBalance.upsert({
     where: { staffId_leaveTypeId_year: { staffId: input.staffId, leaveTypeId: input.leaveTypeId, year: input.year } },
@@ -225,6 +258,7 @@ export async function setBalance(actor: AuthUser, input: z.infer<typeof balanceS
     entity: "LeaveBalance",
     entityId: balance.id,
     after: input,
+    ...meta,
   });
   return balance;
 }

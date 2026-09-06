@@ -8,8 +8,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Pooled (Supavisor, transaction mode) — used by the running app.
+  url       = env("DATABASE_URL")
+  // Direct connection — used only for migrations, which need a session
+  // connection rather than a transaction-mode pooler.
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {

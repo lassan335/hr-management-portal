@@ -7,6 +7,7 @@ import { recordAudit } from "../../lib/audit";
 import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
+import { endOfUtcDay } from "../../lib/dateRange";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
 import { buildTimesheet } from "./timesheet";
 import type { correctionSchema } from "./validation";
@@ -42,7 +43,7 @@ async function resolveTargetStaffId(requester: AuthUser, requestedStaffId?: stri
 export async function getTimesheet(requester: AuthUser, requestedStaffId: string | undefined, from: Date, to: Date) {
   const staffId = await resolveTargetStaffId(requester, requestedStaffId);
   const entries = await prisma.timeEntry.findMany({
-    where: { staffId, timestamp: { gte: from, lte: to } },
+    where: { staffId, timestamp: { gte: from, lte: endOfUtcDay(to) } },
     orderBy: { timestamp: "asc" },
   });
   return buildTimesheet(entries);
@@ -75,7 +76,7 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
   const rows = await Promise.all(
     staffList.map(async (s) => {
       const entries = await prisma.timeEntry.findMany({
-        where: { staffId: s.id, timestamp: { gte: from, lte: to } },
+        where: { staffId: s.id, timestamp: { gte: from, lte: endOfUtcDay(to) } },
         orderBy: { timestamp: "asc" },
       });
       const days = buildTimesheet(entries);

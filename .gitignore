@@ -9,6 +9,7 @@ backend/uploads/*
 !backend/uploads/.gitkeep
 backend/import-watch/incoming/*
 !backend/import-watch/incoming/.gitkeep
+backend/import-watch/manual-uploads/
 
 .DS_Store
 Thumbs.db

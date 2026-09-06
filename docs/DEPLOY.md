@@ -6,11 +6,15 @@ agent's prompt if they ever conflict. Update this file (and commit it) at the
 end of every deploy-related run — durable infra facts belong here, not in
 agent memory or prose._
 
-## Status: hosting not yet chosen — no production deploy has happened
+## Status: database provisioned, app hosting not yet chosen
 
-This is a fresh project. Local git only, no remote, no hosting provider, no
-managed database, no CI. Everything below the topology section is a
-**template to fill in**, not current fact — do not treat it as configured.
+Local git only, no remote, no CI, no app hosting yet — but the database is
+real: a dedicated Supabase Postgres project (`kinbidhoo-hr-portal`, separate
+from the shaviyani-pro-tracker project's own Supabase project — deliberate,
+given this app holds national ID / bank data). Migrated, seeded, and smoke
+tested end to end (real login, encrypted-field round-trip, ZKTime import,
+RBAC boundaries — see Session log below). The **app hosting** section further
+down is still a template to fill in.
 
 ## The deployment topology
 
@@ -20,9 +24,24 @@ managed database, no CI. Everything below the topology section is a
   Prisma connection pool). Plan hosting accordingly: the backend needs a host
   that runs a long-lived process (e.g. Render, Railway, Fly.io, a school-owned
   VM/server), not a bare Vercel serverless-functions deploy.
-- **Database:** PostgreSQL via Prisma. Local dev uses `docker-compose.yml` at
-  the repo root (a throwaway container) — this is NOT connected to whatever
-  production Postgres instance eventually gets provisioned.
+- **Database:** PostgreSQL via Prisma, hosted on Supabase (project
+  `kinbidhoo-hr-portal`, org `shaviyani-pro`, region `ap-southeast-1`). Two
+  connection strings, per Supabase's pooler (Supavisor) setup:
+  `DATABASE_URL` (transaction-mode pooler, port 6543, `?pgbouncer=true`) is
+  what the running app uses; `DIRECT_URL` is a session-mode connection Prisma
+  needs for `migrate`/`db push` (a transaction-mode pooler doesn't support
+  the session state migrations require). **Important:** Supabase's literal
+  "direct connection" host (`db.<ref>.supabase.co:5432`) is IPv6-only —
+  it was unreachable from this build environment (no IPv6 egress) with a DNS
+  `ENOTFOUND`. Worked around by pointing `DIRECT_URL` at the **pooler
+  hostname in session mode instead** (`aws-0-<region>.pooler.supabase.com:5432`,
+  no `?pgbouncer=true`) — same pooler host as `DATABASE_URL`, different port,
+  and it's IPv4-reachable. If your deploy host *does* have IPv6, the literal
+  direct-connection host works too and is marginally preferred for
+  migrations; the pooler session-mode fallback is a fully supported
+  alternative either way, not a hack specific to this one environment.
+  `docker-compose.yml` at the repo root is local-dev-only and unrelated to
+  this Supabase project.
 - **Migrations:** run explicitly via `npx prisma migrate deploy` (from
   `backend/`) against `DATABASE_URL`, deliberately separate from the build
   step so production DB credentials never enter a build environment.
@@ -52,7 +71,9 @@ managed database, no CI. Everything below the topology section is a
 - **Hosting platform / project identifiers:** *(decide: backend host running
   a persistent Node process; frontend can be static hosting/CDN or the same
   host)*
-- **Database:** *(none yet — needs a managed PostgreSQL provider)*
+- **Database:** Supabase project `kinbidhoo-hr-portal` (ref
+  `gntszhhuvrmlhcxylofh`), org `shaviyani-pro`, region `ap-southeast-1`. This
+  part is done — see the topology note above for the pooler/direct-URL setup.
 - **Git remote:** *(none yet — local git only)*
 
 Fill these in — with real values read from the repo's config files and the
@@ -64,7 +85,8 @@ on this decision (see `.claude/deploy-queue.md`).
 
 | Variable | Purpose | Where it lives (fill in once deployed) |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string | *(TBD — host's env panel / secrets manager)* |
+| `DATABASE_URL` | Postgres connection string (pooled) | `backend/.env` (local); Supabase dashboard → Project Settings → Database (source of truth) |
+| `DIRECT_URL` | Postgres connection string (session-mode, for migrations) | `backend/.env` (local); same Supabase page |
 | `JWT_SECRET` | Session JWT signing key (HS256, ≥32 chars) | *(TBD)* |
 | `ENCRYPTION_KEY` | AES-256-GCM key for national ID / bank / salary fields | *(TBD — treat as a crown jewel; back up separately from the app's own secrets store)* |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth app credentials | *(TBD — Google Cloud Console project)* |
@@ -95,6 +117,48 @@ an actual secret value here or anywhere in the repo.
    chosen, mirroring the shape of a typical "trigger → poll for ready →
    confirm deployed commit SHA → mark DEPLOYED" flow before relying on the
    release-engineer agent for autonomous deploys.
+
+## Session log: first live-database verification (2026-09-06)
+
+Once a real Supabase database existed, `npx prisma migrate dev` and
+`npm run db:seed` ran successfully, and the following were exercised against
+real data for the first time (previously only typechecked/boot-tested):
+
+- Real login (dev-bypass) + JWT session issuance, `/api/auth/me`
+- AES-256-GCM encryption round-trip: national ID and bank account
+  number/salary grade correctly decrypt back to their original values
+- RBAC boundaries: STAFF blocked from the full directory (403) and from
+  bank details **even on their own record** (matches spec — HR/Admin-only,
+  no self exception)
+- The self-review guard fix (`cannot_review_own_request`) — reproduced the
+  exact P1 exploit scenario from the finsec review (HR_ADMIN submitting then
+  approving their own overtime request) and confirmed it's now blocked
+- ZKTime import against the real sample export, including the unmatched
+  device review/resolve flow
+
+Two real bugs surfaced by this (neither caught by typecheck/boot-test/code
+review, since both are runtime data-matching issues, not type errors):
+
+1. **ZKTime import matching only checked `AttendanceDevice.staffId`**, never
+   `Staff.deviceUserId` directly — a staff record provisioned/seeded with a
+   `deviceUserId` but no corresponding `AttendanceDevice` row would never
+   match on import. Fixed in `jobs/zktimeImport.ts`: matching now looks up
+   `Staff` by `deviceUserId` directly (the source of truth), and
+   `AttendanceDevice` is upserted alongside as a registry/audit table rather
+   than being the match source itself.
+2. **Date-range queries treated a `to` date param as literal midnight**,
+   silently excluding same-day entries with a time component later than
+   00:00 UTC (attendance timesheet and department dashboard). Fixed via a
+   new `lib/dateRange.ts::endOfUtcDay()` helper applied to both. (Overtime's
+   month-range building and the leave calendar's date-only comparisons were
+   checked and don't have this bug — both already compare same-granularity
+   values.)
+
+Also backdated the seeded `OvertimeRate.effectiveFrom` to the start of the
+year — the default ("now", i.e. seed-run time) was later than the sample
+overtime requests' dates, so the demo showed a null rate/cost for "no rate
+in effect yet" even though that's correct app behavior for the seed
+timing, not a bug.
 
 ## Known residual findings from security review (not yet remediated)
 

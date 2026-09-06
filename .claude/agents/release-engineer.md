@@ -40,11 +40,15 @@ managed PostgreSQL instance.
 - **No embedded/single-process DB locks** — Postgres is a separate service, so no
   need to stop the dev server before running local migrations.
 
-## Deployment coordinates — BLOCKED (hosting not yet chosen)
+## Deployment coordinates — app hosting BLOCKED, database is LIVE
 - **Prod URL:** *(none yet)*
 - **Hosting platform / project identifiers:** *(none yet — decide backend host,
   frontend host, and whether they're the same provider)*
-- **Database:** *(none yet — needs a managed PostgreSQL provider once hosting is chosen)*
+- **Database:** Supabase project `kinbidhoo-hr-portal` (ref
+  `gntszhhuvrmlhcxylofh`, org `shaviyani-pro`, region `ap-southeast-1`) — done.
+  See `docs/DEPLOY.md`'s topology section for the pooled-vs-direct-URL setup
+  and the IPv6 direct-connection caveat before assuming a fresh `DIRECT_URL`
+  works unmodified in a new environment.
 - **Git remote:** *(repo not yet pushed to a remote — local git only so far)*
 Once hosting is chosen, read concrete values from the repo's config files and the
 secrets store at runtime — never hardcode them into this prompt or commit them.

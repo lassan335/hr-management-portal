@@ -27,8 +27,10 @@ ZKTime 5.0 import job), **Overtime**, and **Leave Management**.
 ## Prerequisites
 
 - Node.js 20+ and npm 10+
-- A PostgreSQL instance — either Docker (`docker-compose.yml` at the repo
-  root spins one up) or your own Postgres server
+- A PostgreSQL instance — a [Supabase](https://supabase.com) project (what
+  this app currently runs on — see `docs/DEPLOY.md`), Docker
+  (`docker-compose.yml` at the repo root spins one up locally), or your own
+  Postgres server
 - A Google Cloud project for OAuth (see below) — optional for local dev if
   you use the `DEV_BYPASS_AUTH` escape hatch instead
 
@@ -37,12 +39,15 @@ ZKTime 5.0 import job), **Overtime**, and **Leave Management**.
 ```bash
 npm install                          # installs frontend/backend/shared workspaces
 
-# Local Postgres (skip if you already have one)
-docker compose up -d
-
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
 ```
+
+Set `DATABASE_URL` (and `DIRECT_URL`) in `backend/.env` — either your
+Supabase project's connection strings (Project Settings → Database; see the
+IPv6 note in `.env.example` if migrations can't resolve the direct-connection
+host) or, for a fully local setup, `docker compose up -d` and the
+`docker-compose.yml` defaults already in `.env.example`.
 
 Generate the two required secrets and put them in `backend/.env`:
 
@@ -173,9 +178,17 @@ docs/DEPLOY.md  release-engineer runbook (hosting not yet chosen — see there)
 - **Hosting hasn't been chosen** — see `docs/DEPLOY.md` before deploying;
   the backend needs a host that runs a persistent Node process (it isn't a
   drop-in fit for plain serverless functions).
-- Local dev in this repo's original build environment had no Docker/Postgres
-  available, so migrations, seeding, and the full OAuth/ZKTime-import flow
-  were verified as far as possible without a live database (schema
-  validation, boot smoke tests, standalone parser tests) but not run
-  end-to-end against a real database. Run `npx prisma migrate dev` and
-  `npm run db:seed` on a machine with Postgres before relying on this.
+- **Real Google OAuth hasn't been tested** — only `DEV_BYPASS_AUTH` login has
+  been exercised. Wire up real Google Cloud OAuth credentials and test a
+  login from an actual `@kinbidhooschool.edu.mv` account before relying on
+  the domain-restriction check in production.
+- **No legacy v7.0 data migration script** — the schema is designed to
+  receive migrated staff/overtime/leave history, but no ETL exists; it needs
+  the actual v7.0 export format.
+- Migrations, seeding, and core flows (login, encrypted-field round-trip,
+  RBAC boundaries, the ZKTime import + unmatched-device review, the
+  self-review approval guard) have been run end-to-end against a real
+  Supabase Postgres database — see `docs/DEPLOY.md`'s session log for what
+  was checked and two real bugs it caught. Frontend UI flows and the
+  overtime/leave approval chains in the browser (as opposed to via curl)
+  haven't been clicked through yet.

@@ -209,16 +209,27 @@ export async function processZKTimeFile(filePath: string, importedBy: string | n
   });
 
   for (const punch of punches) {
-    const device = await prisma.attendanceDevice.upsert({
+    // Staff.deviceUserId is the source of truth for matching — it's set
+    // directly on provisioning and kept in sync by resolveUnmatched().
+    // AttendanceDevice is a registry/audit table for admin visibility, not
+    // itself the match source, so an import never silently misses a staff
+    // member whose deviceUserId was set without a corresponding
+    // AttendanceDevice row (e.g. via direct staff provisioning or seeding).
+    const staff = await prisma.staff.findUnique({
       where: { deviceUserId: punch.deviceUserId },
-      create: { deviceUserId: punch.deviceUserId },
-      update: {},
+      select: { id: true },
     });
 
-    if (device.staffId) {
+    await prisma.attendanceDevice.upsert({
+      where: { deviceUserId: punch.deviceUserId },
+      create: { deviceUserId: punch.deviceUserId, staffId: staff?.id },
+      update: staff ? { staffId: staff.id } : {},
+    });
+
+    if (staff) {
       await prisma.timeEntry.create({
         data: {
-          staffId: device.staffId,
+          staffId: staff.id,
           timestamp: punch.timestamp,
           punchType: punch.punchType,
           source: "IMPORT",

@@ -74,14 +74,30 @@ directly with attacker-controlled input).
 
 ---
 
+## DATABASE: LIVE (2026-09-06)
+
+Dedicated Supabase Postgres project `kinbidhoo-hr-portal`
+(ref `gntszhhuvrmlhcxylofh`, org `shaviyani-pro`, region `ap-southeast-1`) —
+deliberately separate from shaviyani-pro-tracker's own project. Migrated,
+seeded, and verified end-to-end via curl: real login, AES-256-GCM
+encrypt/decrypt round-trip, RBAC boundaries (including "not even your own
+bank details"), the self-review approval guard against its exact exploit
+scenario, and the ZKTime import + unmatched-device resolve flow. Full
+details and the two real bugs this caught (ZKTime matching only checked
+`AttendanceDevice`, not `Staff.deviceUserId`; date-range queries treated
+`to` as literal midnight) are in `docs/DEPLOY.md`'s session log. Connection
+strings live in `backend/.env` (gitignored) — see `docs/DEPLOY.md`'s
+credential inventory for where to find them again.
+
 ## NOT YET BUILT / KNOWN GAPS
 
 - **PDF export** — CSV only for timesheets/overtime summaries so far.
-- **Live DB verification** — this dev environment had no Docker/Postgres, so
-  `prisma migrate dev` + `npm run db:seed` + the full OAuth/dev-bypass/ZKTime
-  flow need to be run end-to-end on a machine with Postgres before relying on
-  this. Schema validated, boot-tested, and the ZKTime parser was sanity-tested
-  standalone against a sample file — but no live query has ever run.
+- **Real Google OAuth untested** — only `DEV_BYPASS_AUTH` login has been
+  exercised against the live DB. Needs real Workspace credentials + a login
+  test before relying on the domain-restriction check in production.
+- **Frontend UI flows unclicked** — all live-DB verification so far was via
+  curl against the API directly; the React pages themselves haven't been
+  driven in a browser against the live database yet.
 - **Hosting** — not chosen; `docs/DEPLOY.md` is explicit that this blocks any
   real deploy and spells out the persistent-process/ephemeral-disk
   constraints on the backend.

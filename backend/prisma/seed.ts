@@ -50,7 +50,10 @@ async function main() {
   // --- Overtime rates (per department) -------------------------------------
   for (const dept of [math, science, languages, admin]) {
     await prisma.overtimeRate.create({
-      data: { departmentId: dept.id, weekdayRate: 75, weekendRate: 110, holidayRate: 150 },
+      // Backdated to the start of the year (not the default "now") so the
+      // sample overtime requests dated earlier this month resolve to a rate
+      // instead of showing a null cost for having no rate "yet" in effect.
+      data: { departmentId: dept.id, weekdayRate: 75, weekendRate: 110, holidayRate: 150, effectiveFrom: new Date(year, 0, 1) },
     });
   }
 

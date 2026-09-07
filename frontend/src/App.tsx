@@ -10,6 +10,7 @@ import { StaffDetailPage } from "./pages/staff/StaffDetailPage";
 import { AttendancePage } from "./pages/attendance/AttendancePage";
 import { OvertimePage } from "./pages/overtime/OvertimePage";
 import { LeavePage } from "./pages/leave/LeavePage";
+import { PayrollPage } from "./pages/payroll/PayrollPage";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
               <Route path="/attendance" element={<AttendancePage />} />
               <Route path="/overtime" element={<OvertimePage />} />
               <Route path="/leave" element={<LeavePage />} />
+              <Route path="/payroll" element={<PayrollPage />} />
             </Route>
           </Route>
         </Routes>

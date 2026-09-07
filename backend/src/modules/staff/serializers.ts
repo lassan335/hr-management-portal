@@ -80,10 +80,16 @@ export function toBankDetail(bank: {
   bankName: string;
   accountNumberEnc: string;
   salaryGradeEnc: string;
+  basicSalaryEnc?: string | null;
+  serviceAllowanceEnc?: string | null;
+  jobAllowanceEnc?: string | null;
 }) {
   return {
     bankName: bank.bankName,
     accountNumber: decryptField(bank.accountNumberEnc),
     salaryGrade: decryptField(bank.salaryGradeEnc),
+    basicSalary: bank.basicSalaryEnc ? Number(decryptField(bank.basicSalaryEnc)) : null,
+    serviceAllowance: bank.serviceAllowanceEnc ? Number(decryptField(bank.serviceAllowanceEnc)) : null,
+    jobAllowance: bank.jobAllowanceEnc ? Number(decryptField(bank.jobAllowanceEnc)) : null,
   };
 }

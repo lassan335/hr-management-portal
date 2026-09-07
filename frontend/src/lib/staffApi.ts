@@ -46,6 +46,9 @@ export interface BankDetail {
   bankName: string;
   accountNumber: string;
   salaryGrade: string;
+  basicSalary?: number | null;
+  serviceAllowance?: number | null;
+  jobAllowance?: number | null;
 }
 
 export interface StatusHistoryEntry {

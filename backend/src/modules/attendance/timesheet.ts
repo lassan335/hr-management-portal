@@ -16,6 +16,9 @@ export interface DayTimesheet {
    * implemented here (see README's "Deferred / out of scope"). */
   otPunchedHours: number;
   lateArrival: boolean;
+  /** Minutes between shiftStart and firstIn — 0 when not late. Used by the
+   * salary slip's per-minute late deduction. */
+  lateMinutes: number;
   earlyDeparture: boolean;
   overtimeHours: number;
   /** On a weekend/holiday, attendance counts once >= 3h is worked that day.
@@ -129,6 +132,7 @@ export function buildTimesheet(
     const graceMs = env.gracePeriodMinutes * 60000;
     const dayOfWeek = sorted[0].timestamp.getDay();
     const isWeekendOrHoliday = dayOfWeek === 0 || dayOfWeek === 6;
+    const lateArrival = firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false;
 
     days.push({
       date,
@@ -137,7 +141,8 @@ export function buildTimesheet(
       hoursWorked: Math.round(hoursWorked * 100) / 100,
       breakHours: Math.round(breakHours * 100) / 100,
       otPunchedHours: Math.round(otPunchedHours * 100) / 100,
-      lateArrival: firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false,
+      lateArrival,
+      lateMinutes: lateArrival && firstIn ? Math.round((firstIn.getTime() - shiftStart.getTime()) / 60000) : 0,
       earlyDeparture: lastOut ? lastOut.getTime() < shiftEnd.getTime() - graceMs : false,
       overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),
       holidayAttendanceEligible: isWeekendOrHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,

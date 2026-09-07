@@ -165,6 +165,7 @@ model Staff {
   bankDetails    StaffBankDetail?
   statusHistory  StaffStatusHistory[]
   editRequests   StaffEditRequest[]
+  salarySlipAdjustments SalarySlipAdjustment[]
 
   overtimeRequests   OvertimeRequest[] @relation("OvertimeStaff")
   overtimeHodReviews OvertimeRequest[] @relation("OvertimeHodReviewer")
@@ -221,7 +222,38 @@ model StaffBankDetail {
   bankName         String
   accountNumberEnc String
   salaryGradeEnc   String
+  /// Monthly payroll figures used to generate salary slips — encrypted like
+  /// the rest of this table, HR/Admin-only. Nullable: a staff member with no
+  /// payroll figures configured yet simply can't have a slip generated.
+  basicSalaryEnc      String?
+  serviceAllowanceEnc String?
+  jobAllowanceEnc     String?
   updatedAt        DateTime @updatedAt
+}
+
+/// Per-staff, per-pay-period manual payroll inputs that have no other source
+/// of truth in this system — third-party loan/finance deductions (e.g. MIB),
+/// ad-hoc "Other" deductions, HR-confirmed unexplained-absence deductions,
+/// and the attendance-allowance daily rate. Everything else on the salary
+/// slip (payable days, late-minute deduction, overtime allowance) is
+/// computed from attendance/leave/overtime data already tracked elsewhere.
+model SalarySlipAdjustment {
+  id      String @id @default(cuid())
+  staffId String
+  staff   Staff  @relation(fields: [staffId], references: [id])
+  month   Int
+  year    Int
+
+  mibDeduction              Decimal @default(0) @db.Decimal(10, 2)
+  otherDeduction            Decimal @default(0) @db.Decimal(10, 2)
+  absentDeduction           Decimal @default(0) @db.Decimal(10, 2)
+  attendanceAllowancePerDay Decimal @default(0) @db.Decimal(10, 2)
+
+  updatedBy String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([staffId, month, year])
 }
 
 model StaffStatusHistory {

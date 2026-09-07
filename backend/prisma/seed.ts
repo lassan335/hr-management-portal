@@ -191,6 +191,8 @@ async function main() {
   await prisma.department.update({ where: { id: science.id }, data: { hodStaffId: staffByCode["KS-0003"].id } });
 
   // --- Bank details (HR/Admin-only) for a couple of staff -------------------
+  // KS-0004 also has payroll figures configured, so the Payroll page has at
+  // least one staff member to demo a salary slip against out of the box.
   await prisma.staffBankDetail.upsert({
     where: { staffId: staffByCode["KS-0004"].id },
     create: {
@@ -198,6 +200,9 @@ async function main() {
       bankName: "Bank of Maldives",
       accountNumberEnc: encryptField("7730000123456"),
       salaryGradeEnc: encryptField("Grade 7"),
+      basicSalaryEnc: encryptField("9845"),
+      serviceAllowanceEnc: encryptField("4595"),
+      jobAllowanceEnc: encryptField("0"),
     },
     update: {},
   });

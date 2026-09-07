@@ -81,6 +81,11 @@ export const bankDetailsSchema = z.object({
   bankName: z.string().min(1),
   accountNumber: z.string().min(1),
   salaryGrade: z.string().min(1),
+  /** Monthly payroll figures for salary slip generation — optional, since a
+   * staff member's bank details might be recorded before payroll is set up. */
+  basicSalary: z.coerce.number().nonnegative().optional(),
+  serviceAllowance: z.coerce.number().nonnegative().optional(),
+  jobAllowance: z.coerce.number().nonnegative().optional(),
 });
 
 export const documentTypeSchema = z.nativeEnum(DocumentType);

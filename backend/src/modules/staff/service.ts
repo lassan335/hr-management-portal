@@ -405,6 +405,9 @@ export async function upsertBankDetails(
     bankName: input.bankName,
     accountNumberEnc: encryptField(input.accountNumber),
     salaryGradeEnc: encryptField(input.salaryGrade),
+    ...(input.basicSalary !== undefined ? { basicSalaryEnc: encryptField(String(input.basicSalary)) } : {}),
+    ...(input.serviceAllowance !== undefined ? { serviceAllowanceEnc: encryptField(String(input.serviceAllowance)) } : {}),
+    ...(input.jobAllowance !== undefined ? { jobAllowanceEnc: encryptField(String(input.jobAllowance)) } : {}),
   };
   const bank = await prisma.staffBankDetail.upsert({
     where: { staffId: targetId },

@@ -5,6 +5,7 @@ import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
 import { buildTablePdf } from "../../lib/pdf";
+import { payPeriodRange } from "../../lib/dateRange";
 import { env } from "../../lib/env";
 import type { overtimeRequestSchema, rateSchema } from "./validation";
 import type { z } from "zod";
@@ -240,15 +241,8 @@ export async function getCurrentRate(requester: AuthUser, departmentId: string) 
 
 /** Only requests that were approved AND actually completed AND never
  * cancelled count toward payroll — an approved-but-never-done slot isn't paid. */
-/** The OT/payroll period labeled "month" runs from otPeriodStartDay of the
- * PREVIOUS month through (otPeriodStartDay - 1) of "month" — e.g. with the
- * default start day 16, the "September" period is 16 Aug -> 15 Sep, matching
- * the legacy portal's "Monthly Overtime Record Sheet _ 16 Aug to 15 Sep". */
 function otPeriodRange(month: number, year: number): { from: Date; to: Date } {
-  const startDay = env.otPeriodStartDay;
-  const from = new Date(year, month - 2, startDay);
-  const to = new Date(year, month - 1, startDay - 1, 23, 59, 59, 999);
-  return { from, to };
+  return payPeriodRange(month, year, env.otPeriodStartDay);
 }
 
 async function payableRequestsInMonth(staffId: string, month: number, year: number) {

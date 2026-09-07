@@ -331,6 +331,9 @@ function BankDetailsSection({ targetId, onChanged }: { targetId: string; onChang
           <div><dt className="text-slate-400">Bank</dt><dd>{bank.bankName}</dd></div>
           <div><dt className="text-slate-400">Account number</dt><dd>{bank.accountNumber}</dd></div>
           <div><dt className="text-slate-400">Salary grade</dt><dd>{bank.salaryGrade}</dd></div>
+          <div><dt className="text-slate-400">Basic salary</dt><dd>{bank.basicSalary ?? "—"}</dd></div>
+          <div><dt className="text-slate-400">Service allowance</dt><dd>{bank.serviceAllowance ?? "—"}</dd></div>
+          <div><dt className="text-slate-400">Job allowance</dt><dd>{bank.jobAllowance ?? "—"}</dd></div>
         </dl>
       )}
       {!editing && !bank && <p className="text-slate-400 text-sm mt-2">No bank details on file.</p>}
@@ -345,10 +348,29 @@ function BankDetailsSection({ targetId, onChanged }: { targetId: string; onChang
               className="border border-slate-300 rounded-md px-2 py-1 text-sm w-full"
             />
           ))}
+          <p className="text-xs text-slate-400 pt-1">Monthly payroll figures (used to generate salary slips):</p>
+          {(["basicSalary", "serviceAllowance", "jobAllowance"] as const).map((f) => (
+            <input
+              key={f}
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder={f}
+              value={form[f] ?? ""}
+              onChange={(e) => setForm({ ...form, [f]: e.target.value === "" ? null : Number(e.target.value) })}
+              className="border border-slate-300 rounded-md px-2 py-1 text-sm w-full"
+            />
+          ))}
           <button
             className="bg-brand-600 text-white text-sm px-3 py-1 rounded-md"
             onClick={async () => {
-              const updated = await staffApi.upsertBankDetails(targetId, form);
+              // Omit payroll fields left blank rather than sending null (which
+              // the server would coerce to 0 and treat as "configured").
+              const payload = { ...form };
+              (["basicSalary", "serviceAllowance", "jobAllowance"] as const).forEach((f) => {
+                if (payload[f] == null) delete payload[f];
+              });
+              const updated = await staffApi.upsertBankDetails(targetId, payload);
               setBank(updated);
               setEditing(false);
               onChanged("Bank details saved.");

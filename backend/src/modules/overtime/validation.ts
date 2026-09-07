@@ -17,6 +17,13 @@ export const reviewSchema = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
 });
 
+// `manual: true` is HR's explicit override when no device punch is found —
+// see overtime/service.ts's completeWork() doc comment.
+export const completeWorkSchema = z.object({
+  manual: z.boolean().optional().default(false),
+  note: z.string().optional(),
+});
+
 export const rateSchema = z.object({
   departmentId: z.string().min(1),
   weekdayRate: z.coerce.number().nonnegative(),

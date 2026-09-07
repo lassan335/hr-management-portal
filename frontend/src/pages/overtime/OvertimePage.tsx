@@ -51,6 +51,7 @@ function SubmitAndList() {
   });
   const [error, setError] = useState<string | null>(null);
   const canReview = user?.role === Role.HOD || user?.role === Role.HR_ADMIN;
+  const isHrAdmin = user?.role === Role.HR_ADMIN;
 
   async function refresh() {
     setList(await overtimeApi.list());
@@ -71,9 +72,39 @@ function SubmitAndList() {
     }
   }
 
+  // Staff no longer self-report completion — it's confirmed by an actual
+  // OVERTIME_IN/OVERTIME_OUT time clock punch pair once ZKTime is imported
+  // (usually automatic). This tries that first; if no punch is on file yet,
+  // it falls back to an HR manual override with a reason, for cases where
+  // the device data is missing or delayed.
+  async function markComplete(id: string) {
+    setError(null);
+    try {
+      await overtimeApi.complete(id);
+      refresh();
+    } catch (err) {
+      if (err instanceof ApiError && err.message === "no_device_confirmation") {
+        const note = window.prompt(
+          "No time clock punch found for this date yet. Enter a reason to mark it complete manually (Cancel to wait for the device data instead):"
+        );
+        if (note === null) return;
+        try {
+          await overtimeApi.complete(id, { manual: true, note: note || undefined });
+          refresh();
+        } catch (err2) {
+          setError(err2 instanceof ApiError ? err2.message : "Failed to mark complete");
+        }
+      } else {
+        setError(err instanceof ApiError ? err.message : "Failed to mark complete");
+      }
+    }
+  }
+
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium text-slate-700 mb-2">{canReview ? "Pending Requests" : "My Pre-requested Overtime Slips"}</h2>
+      <h2 className="font-medium text-slate-700 mb-2">
+        {isHrAdmin ? "Pending & Awaiting Completion" : canReview ? "Pending Requests" : "My Pre-requested Overtime Slips"}
+      </h2>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="text-left text-slate-500">
@@ -102,7 +133,15 @@ function SubmitAndList() {
                 <td className="px-2 py-1">{r.hodReviewer?.fullName ?? r.hrReviewer?.fullName ?? "—"}</td>
                 <td className="px-2 py-1"><StatusBadge status={r.status} /></td>
                 <td className="px-2 py-1">{r.cancelled ? <Badge tone="red">Cancelled</Badge> : <Badge tone="slate">No</Badge>}</td>
-                <td className="px-2 py-1">{r.workCompleted ? <Badge tone="green">Yes</Badge> : <Badge tone="slate">No</Badge>}</td>
+                <td className="px-2 py-1">
+                  {r.workCompleted ? (
+                    <Badge tone="green">Yes{r.completionSource === "MANUAL" ? " (HR)" : r.completionSource === "DEVICE" ? " (Device)" : ""}</Badge>
+                  ) : r.status === "APPROVED" ? (
+                    <Badge tone="slate">Awaiting time clock</Badge>
+                  ) : (
+                    <Badge tone="slate">No</Badge>
+                  )}
+                </td>
                 <td className="px-2 py-1">{r.estimatedCost != null ? `MVR ${r.estimatedCost}` : "—"}</td>
                 <td className="px-2 py-1 space-x-2 whitespace-nowrap">
                   {canReview && (r.status === "PENDING_HOD" || r.status === "PENDING_HR") && (
@@ -111,11 +150,11 @@ function SubmitAndList() {
                       <button className="text-red-600 text-xs" onClick={async () => { await overtimeApi.review(r.id, "REJECT"); refresh(); }}>Reject</button>
                     </>
                   )}
+                  {isHrAdmin && r.status === "APPROVED" && !r.cancelled && !r.workCompleted && (
+                    <button className="text-brand-600 text-xs" onClick={() => markComplete(r.id)}>Mark Complete</button>
+                  )}
                   {!canReview && !r.cancelled && !r.workCompleted && (
                     <button className="text-red-600 text-xs" onClick={async () => { await overtimeApi.cancel(r.id); refresh(); }}>Cancel</button>
-                  )}
-                  {!canReview && r.status === "APPROVED" && !r.cancelled && !r.workCompleted && (
-                    <button className="text-brand-600 text-xs" onClick={async () => { await overtimeApi.complete(r.id); refresh(); }}>Complete OT Work</button>
                   )}
                 </td>
               </tr>
@@ -154,7 +193,8 @@ function SubmitAndList() {
       {!canReview && (
         <p className="text-slate-400 text-xs mt-2">
           Submit before doing the work — requests must be made within the submission window and each slot is capped at a maximum
-          continuous duration per the school's overtime policy.
+          continuous duration per the school's overtime policy. Once approved, punch OVERTIME IN / OVERTIME OUT on the time clock
+          when you do the work — that's what confirms it for payroll, not a button here.
         </p>
       )}
     </div>

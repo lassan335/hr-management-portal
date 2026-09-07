@@ -14,6 +14,10 @@ export interface OvertimeRequestRow {
   cancelledAt: string | null;
   workCompleted: boolean;
   workCompletedAt: string | null;
+  /** "DEVICE" (matched a real OVERTIME_IN/OVERTIME_OUT time clock punch
+   * pair) or "MANUAL" (HR override). Null until workCompleted. */
+  completionSource: "DEVICE" | "MANUAL" | null;
+  completionNote: string | null;
   createdAt: string;
   staff?: { fullName: string; staffId: string };
   hodReviewer?: { fullName: string } | null;
@@ -80,7 +84,12 @@ export const overtimeApi = {
   list: () => api.get<OvertimeRequestRow[]>("/api/overtime"),
   review: (id: string, decision: "APPROVE" | "REJECT") => api.patch(`/api/overtime/${id}`, { decision }),
   cancel: (id: string) => api.post<OvertimeRequestRow>(`/api/overtime/${id}/cancel`, {}),
-  complete: (id: string) => api.post<OvertimeRequestRow>(`/api/overtime/${id}/complete`, {}),
+  /** HR-only. Tries the real time-clock punch pair first; pass
+   * `manual: true` (with an optional `note`) to force it when there's no
+   * device confirmation yet — throws ApiError("no_device_confirmation") if
+   * neither a punch nor `manual` is given. */
+  complete: (id: string, options: { manual?: boolean; note?: string } = {}) =>
+    api.post<OvertimeRequestRow>(`/api/overtime/${id}/complete`, options),
   setRate: (input: { departmentId: string; weekdayRate: number; weekendRate: number; holidayRate: number }) =>
     api.post<OvertimeRate>("/api/overtime/rates", input),
   getRate: (departmentId: string) => api.get<OvertimeRate | null>(`/api/overtime/rates/${departmentId}`),

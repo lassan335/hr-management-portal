@@ -5,6 +5,7 @@ import { parse as parseCsv } from "csv-parse/sync";
 import ExcelJS from "exceljs";
 import { PunchType } from "@hr/shared";
 import { prisma } from "../lib/prisma";
+import { reconcileOvertimeCompletion } from "../modules/overtime/service";
 
 export interface ParsedPunch {
   deviceUserId: string;
@@ -229,6 +230,11 @@ export async function processZKTimeFile(filePath: string, importedBy: string | n
 
   let matchedCount = 0;
   let unmatchedCount = 0;
+  // (staffId, calendar date) pairs that received an OVERTIME_IN/OVERTIME_OUT
+  // punch in this import — reconciled against any APPROVED, not-yet-completed
+  // OvertimeRequest once every row is in, so a request submitted for a date
+  // that already has punches imported still gets auto-completed correctly.
+  const otTouchedDays = new Map<string, { staffId: string; date: Date }>();
 
   const syncLog = await prisma.attendanceSyncLog.create({
     data: { fileName, fileHash, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0, importedBy },
@@ -262,6 +268,10 @@ export async function processZKTimeFile(filePath: string, importedBy: string | n
         },
       });
       matchedCount += 1;
+      if (punch.punchType === PunchType.OVERTIME_IN || punch.punchType === PunchType.OVERTIME_OUT) {
+        const dayKey = `${staff.id}|${punch.timestamp.toISOString().slice(0, 10)}`;
+        otTouchedDays.set(dayKey, { staffId: staff.id, date: punch.timestamp });
+      }
     } else {
       await prisma.attendanceUnmatchedEntry.create({
         data: {
@@ -279,6 +289,10 @@ export async function processZKTimeFile(filePath: string, importedBy: string | n
     where: { id: syncLog.id },
     data: { matchedCount, unmatchedCount },
   });
+
+  for (const { staffId, date } of otTouchedDays.values()) {
+    await reconcileOvertimeCompletion(staffId, date);
+  }
 
   return { syncLogId: syncLog.id, processedCount: punches.length, matchedCount, unmatchedCount };
 }

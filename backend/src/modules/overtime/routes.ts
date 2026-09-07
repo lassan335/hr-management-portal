@@ -4,7 +4,7 @@ import { authenticate } from "../../lib/auth";
 import { requireRole } from "../../lib/rbac";
 import { requestMeta } from "../../lib/audit";
 import * as service from "./service";
-import { overtimeRequestSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema } from "./validation";
+import { overtimeRequestSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema, completeWorkSchema } from "./validation";
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void | Response>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -54,8 +54,10 @@ export function overtimeRouter(): Router {
 
   router.post(
     "/:id/complete",
+    requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
-      res.json(await service.completeWork(req.user!, String(req.params.id), requestMeta(req)));
+      const input = completeWorkSchema.parse(req.body);
+      res.json(await service.completeWork(req.user!, String(req.params.id), input, requestMeta(req)));
     })
   );
 

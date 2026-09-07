@@ -77,6 +77,7 @@ enum NotificationType {
   OVERTIME_SUBMITTED
   OVERTIME_APPROVED
   OVERTIME_REJECTED
+  OVERTIME_WORK_COMPLETED
   LEAVE_SUBMITTED
   LEAVE_APPROVED
   LEAVE_REJECTED
@@ -294,9 +295,13 @@ model OvertimeRate {
 
 /// Pre-approval model, matching the legacy v7.0 workflow: staff request
 /// overtime for a planned time window BEFORE doing the work, a supervisor
-/// approves it, the staff member does the work, then explicitly marks it
-/// "Work Completed" — hours/cost for payroll only count once completed
-/// (an approved-but-never-done slot is not paid).
+/// approves it, the staff member does the work and punches OVERTIME_IN/
+/// OVERTIME_OUT on the biometric time clock, and that punch pair (imported
+/// via ZKTime — see jobs/zktimeImport.ts's reconcileOvertimeCompletion call)
+/// is what marks the request "Work Completed" — hours/cost for payroll only
+/// count once completed (an approved-but-never-done slot is not paid). HR
+/// retains a manual override (completionSource "MANUAL") for when the
+/// device punch is missing or delayed.
 model OvertimeRequest {
   id      String   @id @default(cuid())
   staffId String
@@ -323,10 +328,19 @@ model OvertimeRequest {
   cancelled   Boolean   @default(false)
   cancelledAt DateTime?
 
-  /// Set by the staff member after actually doing the approved work.
-  /// Only APPROVED + completed + not cancelled slots count for payroll.
+  /// Set once a matching OVERTIME_IN/OVERTIME_OUT punch pair is found for
+  /// this staff member on this date (see reconcileOvertimeCompletion), or by
+  /// an HR manual override. Only APPROVED + completed + not cancelled slots
+  /// count for payroll.
   workCompleted   Boolean   @default(false)
   workCompletedAt DateTime?
+  /// "DEVICE" (matched a real time-clock punch pair) or "MANUAL" (HR
+  /// override, used when device data is missing/delayed). Null until
+  /// completed.
+  completionSource String?
+  /// HR's reason for a manual override — only meaningful when
+  /// completionSource is "MANUAL".
+  completionNote    String?
 
   createdAt DateTime @default(now())
 }

@@ -1,4 +1,4 @@
-import { AuthUser, NotificationType, Role } from "@hr/shared";
+import { AuthUser, NotificationType, PunchType, Role } from "@hr/shared";
 import { prisma } from "../../lib/prisma";
 import { decryptField } from "../../lib/encryption";
 import { recordAudit } from "../../lib/audit";
@@ -171,7 +171,13 @@ export async function listRequests(requester: AuthUser) {
   let requests;
   if (requester.role === Role.HR_ADMIN) {
     requests = await prisma.overtimeRequest.findMany({
-      where: { status: { in: ["PENDING_HOD", "PENDING_HR"] }, cancelled: false },
+      // Pending approval, plus already-approved slots still waiting on a
+      // time-clock punch (or a manual override) — HR is the only role that
+      // can act on completeWork(), so this is where that queue surfaces.
+      where: {
+        cancelled: false,
+        OR: [{ status: { in: ["PENDING_HOD", "PENDING_HR"] } }, { status: "APPROVED", workCompleted: false }],
+      },
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
     });
@@ -282,29 +288,120 @@ export async function cancelRequest(actor: AuthUser, requestId: string, meta: Au
   return updated;
 }
 
-/** Staff confirming the approved work actually happened — only APPROVED,
- * non-cancelled requests can be marked complete. Payroll totals below only
- * count requests that reach this state, not merely "approved". */
-export async function completeWork(actor: AuthUser, requestId: string, meta: AuditMeta = {}) {
+/** True if the staff member has at least one complete OVERTIME_IN/
+ * OVERTIME_OUT punch pair on this calendar date, per the ZKTime 5.0
+ * biometric time clock — the real-world confirmation that the pre-approved
+ * OT slot was actually worked. Paired the same way buildTimesheet pairs
+ * BREAK_IN/BREAK_OUT: whichever punch comes first opens the pair, the next
+ * one of either type closes it. Only presence of a pair matters here — the
+ * *paid* hours still come from the originally approved request window, not
+ * the punch duration (see completeWork's doc comment for why). */
+async function hasOtPunchPair(staffId: string, date: Date): Promise<boolean> {
+  const dayStart = new Date(date);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+  const punches = await prisma.timeEntry.findMany({
+    where: {
+      staffId,
+      timestamp: { gte: dayStart, lt: dayEnd },
+      punchType: { in: [PunchType.OVERTIME_IN, PunchType.OVERTIME_OUT] },
+    },
+    orderBy: { timestamp: "asc" },
+  });
+  return punches.length >= 2;
+}
+
+async function markWorkCompleted(
+  requestId: string,
+  staffId: string,
+  requestDate: Date,
+  completionSource: "DEVICE" | "MANUAL",
+  completionNote: string | null,
+  actorId: string,
+  meta: AuditMeta = {}
+) {
+  const updated = await prisma.overtimeRequest.update({
+    where: { id: requestId },
+    data: { workCompleted: true, workCompletedAt: new Date(), completionSource, completionNote },
+  });
+  await recordAudit({
+    actorId,
+    action: "OVERTIME_WORK_COMPLETED",
+    entity: "OvertimeRequest",
+    entityId: requestId,
+    after: { completionSource, completionNote },
+    ...meta,
+  });
+  await notify({
+    staffId,
+    type: NotificationType.OVERTIME_WORK_COMPLETED,
+    message:
+      completionSource === "DEVICE"
+        ? `Your overtime for ${requestDate.toISOString().slice(0, 10)} was confirmed by the time clock and will be included in payroll.`
+        : `Your overtime for ${requestDate.toISOString().slice(0, 10)} was marked complete by HR.`,
+  });
+  return updated;
+}
+
+/** Auto-completion hook, called after a ZKTime import brings in new
+ * OVERTIME_IN/OVERTIME_OUT punches — finds this staff member's APPROVED,
+ * not-yet-completed request on the punch's date (if any) and marks it
+ * Work Completed with completionSource "DEVICE". No-op if there's no such
+ * request or no complete punch pair yet. Returns true if a request was
+ * completed. */
+export async function reconcileOvertimeCompletion(staffId: string, date: Date): Promise<boolean> {
+  const dayKey = date.toISOString().slice(0, 10);
+  const candidates = await prisma.overtimeRequest.findMany({
+    where: { staffId, status: "APPROVED", cancelled: false, workCompleted: false },
+  });
+  const request = candidates.find((r) => r.date.toISOString().slice(0, 10) === dayKey);
+  if (!request) return false;
+  if (!(await hasOtPunchPair(staffId, date))) return false;
+
+  await markWorkCompleted(request.id, staffId, request.date, "DEVICE", null, staffId);
+  return true;
+}
+
+/**
+ * Marks an approved OT request "Work Completed" — HR-only. First tries to
+ * confirm it against a real OVERTIME_IN/OVERTIME_OUT punch pair from the
+ * time clock (the normal path — usually already done automatically by
+ * reconcileOvertimeCompletion right after the relevant ZKTime import, this
+ * is the on-demand equivalent for requests approved *after* the import
+ * already ran). If no device confirmation exists yet, HR can force it with
+ * `manual: true` (device offline, staff forgot to punch, etc.) — recorded
+ * as completionSource "MANUAL" with the given note for audit purposes.
+ * Staff can no longer self-report completion — only a real punch or an
+ * explicit HR override counts. Payroll totals only count requests that
+ * reach this state, not merely "approved". */
+export async function completeWork(
+  actor: AuthUser,
+  requestId: string,
+  options: { manual?: boolean; note?: string } = {},
+  meta: AuditMeta = {}
+) {
+  if (actor.role !== Role.HR_ADMIN) throw new HttpError(403, "forbidden");
+
   const request = await prisma.overtimeRequest.findUnique({ where: { id: requestId } });
   if (!request) throw new HttpError(404, "not_found");
-  if (request.staffId !== actor.staffId) throw new HttpError(403, "forbidden");
   if (request.cancelled) throw new HttpError(409, "request_cancelled");
   if (request.status !== "APPROVED") throw new HttpError(409, "not_approved");
   if (request.workCompleted) throw new HttpError(409, "already_completed");
 
-  const updated = await prisma.overtimeRequest.update({
-    where: { id: requestId },
-    data: { workCompleted: true, workCompletedAt: new Date() },
-  });
-  await recordAudit({
-    actorId: actor.staffId,
-    action: "OVERTIME_WORK_COMPLETED",
-    entity: "OvertimeRequest",
-    entityId: requestId,
-    ...meta,
-  });
-  return updated;
+  const deviceConfirmed = await hasOtPunchPair(request.staffId, request.date);
+  if (!deviceConfirmed && !options.manual) {
+    throw new HttpError(409, "no_device_confirmation");
+  }
+
+  return markWorkCompleted(
+    request.id,
+    request.staffId,
+    request.date,
+    deviceConfirmed ? "DEVICE" : "MANUAL",
+    deviceConfirmed ? null : options.note ?? null,
+    actor.staffId,
+    meta
+  );
 }
 
 export async function setRate(actor: AuthUser, input: z.infer<typeof rateSchema>, meta: AuditMeta = {}) {

@@ -8,6 +8,7 @@ import type {
   BankDetail,
   StatusHistoryEntry,
   Qualification,
+  Department,
 } from "../../lib/staffApi";
 
 const SELF_EDITABLE_FIELDS = ["contactNumber", "personalEmail", "homeAddress", "emergencyContact"];
@@ -83,6 +84,18 @@ export function StaffDetailView({ targetId }: { targetId: string }) {
         </p>
       )}
 
+      {isHr && isFullDetail(staff) && (
+        <RoleAccessSection
+          targetId={targetId}
+          currentRole={staff.role}
+          currentDepartmentId={staff.departmentId}
+          isSelf={isSelf}
+          onChanged={(msg) => {
+            setMessage(msg);
+            load();
+          }}
+        />
+      )}
       {isHr && <BankDetailsSection targetId={targetId} onChanged={setMessage} />}
       {isHr && <StatusSection targetId={targetId} currentStatus={staff.status} onChanged={setMessage} />}
       <QualificationsSection targetId={targetId} canEdit={isSelf || isHr} />
@@ -192,6 +205,103 @@ function ProfileSection({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+const ROLE_OPTIONS = [Role.STAFF, Role.HOD, Role.HR_ADMIN];
+
+function RoleAccessSection({
+  targetId,
+  currentRole,
+  currentDepartmentId,
+  isSelf,
+  onChanged,
+}: {
+  targetId: string;
+  currentRole: string;
+  currentDepartmentId: string;
+  isSelf: boolean;
+  onChanged: (msg: string) => void;
+}) {
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [role, setRole] = useState(currentRole);
+  const [departmentId, setDepartmentId] = useState(currentDepartmentId);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    staffApi.departments().then(setDepartments).catch(() => setDepartments([]));
+  }, []);
+
+  const dirty = role !== currentRole || departmentId !== currentDepartmentId;
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      await staffApi.adminUpdate(targetId, { role, departmentId });
+      onChanged("Access updated. If this changes what they can see, their next request will require signing in again.");
+    } catch (e) {
+      setError((e as Error).message || "Failed to update access.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 className="font-medium text-slate-700 mb-1">Role &amp; Access</h2>
+      <p className="text-xs text-slate-400 mb-3">
+        Controls what this account can see and do — Staff (own records only), HOD (department
+        approvals), or HR/Admin (full access, including payroll).
+      </p>
+
+      {isSelf ? (
+        <p className="text-sm text-amber-600">
+          You can&apos;t change your own role or department here — ask another HR/Admin to do it,
+          so you don&apos;t accidentally lock yourself out.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2 items-end">
+          <label className="flex flex-col text-xs">
+            Role
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+            >
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs">
+            Department
+            <select
+              value={departmentId}
+              onChange={(e) => setDepartmentId(e.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+            >
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            disabled={!dirty || saving}
+            onClick={save}
+            className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save access"}
+          </button>
+        </div>
+      )}
+      {error && <p className="text-red-600 text-xs mt-2">{error}</p>}
     </div>
   );
 }

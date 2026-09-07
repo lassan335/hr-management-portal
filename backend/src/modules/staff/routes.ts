@@ -74,6 +74,13 @@ export function staffRouter(): Router {
   );
 
   router.get(
+    "/departments",
+    asyncHandler(async (_req, res) => {
+      res.json(await service.listDepartments());
+    })
+  );
+
+  router.get(
     "/edit-requests",
     asyncHandler(async (req, res) => {
       res.json(await service.listEditRequests(req.user!));

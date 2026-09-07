@@ -65,11 +65,17 @@ export interface Qualification {
   notes: string | null;
 }
 
+export interface Department {
+  id: string;
+  name: string;
+}
+
 export const staffApi = {
   list: (params: Record<string, string> = {}) => {
     const qs = new URLSearchParams(params).toString();
     return api.get<StaffSummaryRow[]>(`/api/staff${qs ? `?${qs}` : ""}`);
   },
+  departments: () => api.get<Department[]>("/api/staff/departments"),
   getMe: () => api.get<StaffDetail>("/api/staff/me"),
   getById: (id: string) => api.get<StaffDetail | StaffSummaryRow>(`/api/staff/${id}`),
   selfUpdate: (patch: Record<string, string>) => api.patch<StaffDetail>("/api/staff/me", patch),

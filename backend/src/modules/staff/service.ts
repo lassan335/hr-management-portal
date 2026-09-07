@@ -28,6 +28,12 @@ function maskSensitive(value: string): string {
   return `****${value.slice(-4)}`;
 }
 
+/** Any authenticated user — just id/name, needed for role-assignment and
+ * staff-creation dropdowns. Not sensitive. */
+export async function listDepartments() {
+  return prisma.department.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } });
+}
+
 /** HR/Admin: full directory. HOD: department-scoped. Staff: forbidden (use /me). */
 export async function listStaff(requester: AuthUser, query: ListQuery) {
   const where: Record<string, unknown> = {};

@@ -8,6 +8,8 @@ export interface DayTimesheet {
   lateArrival: boolean;
   earlyDeparture: boolean;
   overtimeHours: number;
+  holidayAttendanceEligible: boolean;
+  overtimeEligible: boolean;
 }
 
 export interface DashboardRow {

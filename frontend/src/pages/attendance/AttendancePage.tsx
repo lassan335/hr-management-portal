@@ -9,6 +9,7 @@ import type {
   UnmatchedEntry,
   CorrectionRequest,
 } from "../../lib/attendanceApi";
+import { Badge, StatusBadge } from "../../components/ui";
 
 function firstOfMonth(): string {
   const d = new Date();
@@ -106,10 +107,12 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
               <td className="px-2 py-1">{d.firstIn ? new Date(d.firstIn).toLocaleTimeString() : "—"}</td>
               <td className="px-2 py-1">{d.lastOut ? new Date(d.lastOut).toLocaleTimeString() : "—"}</td>
               <td className="px-2 py-1">{d.hoursWorked}</td>
-              <td className="px-2 py-1 space-x-1">
-                {d.lateArrival && <span className="text-amber-600">Late</span>}
-                {d.earlyDeparture && <span className="text-amber-600">Early leave</span>}
-                {d.overtimeHours > 0 && <span className="text-brand-600">+{d.overtimeHours}h OT</span>}
+              <td className="px-2 py-1 space-x-1 space-y-1">
+                {d.lateArrival && <Badge tone="amber">Late</Badge>}
+                {d.earlyDeparture && <Badge tone="amber">Early leave</Badge>}
+                {d.overtimeHours > 0 && <Badge tone="blue">+{d.overtimeHours}h OT</Badge>}
+                {d.holidayAttendanceEligible && <Badge tone="green">Holiday attendance eligible</Badge>}
+                {d.overtimeEligible && <Badge tone="green">Overtime eligible</Badge>}
               </td>
             </tr>
           ))}
@@ -179,11 +182,12 @@ function CorrectionsSection() {
       <h2 className="font-medium text-slate-700 mb-2">Attendance Correction Requests</h2>
       <ul className="text-sm space-y-1 mb-3">
         {list.map((c) => (
-          <li key={c.id} className="flex items-center justify-between">
+          <li key={c.id} className="flex items-center justify-between gap-2">
             <span>
               {c.staff ? `${c.staff.fullName} — ` : ""}{c.date.slice(0, 10)} {c.requestedPunchType} @{" "}
-              {new Date(c.requestedTime).toLocaleTimeString()} — {c.reason} <em className="text-slate-400">({c.status})</em>
+              {new Date(c.requestedTime).toLocaleTimeString()} — {c.reason}
             </span>
+            <StatusBadge status={c.status} />
             {canReview && (c.status === "PENDING_HOD" || c.status === "PENDING_HR") && (
               <span className="space-x-2">
                 <button className="text-green-600 text-xs" onClick={async () => { await attendanceApi.reviewCorrection(c.id, "APPROVE"); refresh(); }}>Approve</button>

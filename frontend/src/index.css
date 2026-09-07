@@ -5,3 +5,81 @@
 body {
   @apply bg-slate-50 text-slate-900;
 }
+.dark body {
+  background-color: theme("colors.slate.950");
+  color: theme("colors.slate.100");
+}
+
+/*
+ * Dark-mode retrofit for pages written with plain (light-only) slate/white
+ * utility classes. Rather than adding a "dark:" variant to every className
+ * in every page, we override what those exact Tailwind utility classes mean
+ * once a `.dark` class is present higher up the tree. `.dark .text-slate-500`
+ * has higher specificity than `.text-slate-500` alone, so it always wins
+ * regardless of source order, with no `!important` needed.
+ *
+ * These use theme() value lookups rather than @apply: @apply's cycle
+ * detector treats any custom selector whose text contains a utility's own
+ * class name (e.g. ".dark .text-slate-500") as touching that utility's
+ * definition, and flags a false "circular dependency" as soon as that same
+ * utility is @applied anywhere else in the file (see the input::placeholder
+ * rule below). theme() is a plain value lookup, so it sidesteps that engine
+ * entirely.
+ */
+.dark .bg-white {
+  background-color: theme("colors.slate.900");
+}
+.dark .bg-slate-50 {
+  background-color: theme("colors.slate.800");
+}
+.dark .border-slate-100 {
+  border-color: theme("colors.slate.800");
+}
+.dark .border-slate-200 {
+  border-color: theme("colors.slate.800");
+}
+.dark .border-slate-300 {
+  border-color: theme("colors.slate.700");
+}
+.dark .text-slate-400 {
+  color: theme("colors.slate.500");
+}
+.dark .text-slate-500 {
+  color: theme("colors.slate.400");
+}
+.dark .text-slate-600 {
+  color: theme("colors.slate.300");
+}
+.dark .text-slate-700 {
+  color: theme("colors.slate.200");
+}
+.dark .text-slate-800 {
+  color: theme("colors.slate.100");
+}
+.dark .hover\:bg-slate-50:hover {
+  background-color: theme("colors.slate.800");
+}
+.dark .hover\:bg-slate-100:hover {
+  background-color: theme("colors.slate.800");
+}
+.dark .bg-green-50 {
+  background-color: theme("colors.green.950");
+}
+.dark .border-green-200 {
+  border-color: theme("colors.green.800");
+}
+.dark .text-green-700 {
+  color: theme("colors.green.400");
+}
+
+.dark input:not([type="checkbox"]):not([type="radio"]),
+.dark select,
+.dark textarea {
+  background-color: theme("colors.slate.800");
+  border-color: theme("colors.slate.700");
+  color: theme("colors.slate.100");
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: theme("colors.slate.500");
+}

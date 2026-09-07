@@ -5,6 +5,7 @@ import { useAuth } from "../../lib/AuthContext";
 import { staffApi, staffCsvExportUrl } from "../../lib/staffApi";
 import type { StaffSummaryRow } from "../../lib/staffApi";
 import { StaffDetailView } from "./StaffDetailView";
+import { StatusBadge } from "../../components/ui";
 
 export function StaffPage() {
   const { user } = useAuth();
@@ -109,7 +110,7 @@ function StaffDirectory() {
                   </td>
                   <td className="px-4 py-2">{r.fullName}</td>
                   <td className="px-4 py-2">{r.designation}</td>
-                  <td className="px-4 py-2">{r.status}</td>
+                  <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
                 </tr>
               ))}
               {rows.length === 0 && (

@@ -3,6 +3,7 @@ import { Role } from "@hr/shared";
 import { useAuth } from "../../lib/AuthContext";
 import { leaveApi } from "../../lib/leaveApi";
 import type { LeaveType, LeaveRequestRow, LeaveBalanceRow, CalendarEntry } from "../../lib/leaveApi";
+import { StatusBadge } from "../../components/ui";
 
 function firstOfMonth(): string {
   const d = new Date();
@@ -46,11 +47,12 @@ function RequestsSection() {
       <h2 className="font-medium text-slate-700 mb-2">{canReview ? "Pending Leave Requests" : "My Leave Requests"}</h2>
       <ul className="text-sm space-y-1 mb-3">
         {list.map((r) => (
-          <li key={r.id} className="flex items-center justify-between">
+          <li key={r.id} className="flex items-center justify-between gap-2">
             <span>
               {r.staff ? `${r.staff.fullName} — ` : ""}{r.leaveType?.name ?? r.leaveTypeId}: {r.startDate.slice(0, 10)} to {r.endDate.slice(0, 10)}
-              {r.reason ? ` — ${r.reason}` : ""} <em className="text-slate-400">({r.status})</em>
+              {r.reason ? ` — ${r.reason}` : ""}
             </span>
+            <StatusBadge status={r.status} />
             {canReview && (r.status === "PENDING_HOD" || r.status === "PENDING_HR") && (
               <span className="space-x-2">
                 <button className="text-green-600 text-xs" onClick={async () => { await leaveApi.review(r.id, "APPROVE"); refresh(); }}>Approve</button>

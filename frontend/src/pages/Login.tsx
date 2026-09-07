@@ -32,7 +32,7 @@ export function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center">
         <img src={logo} alt="Kinbidhoo School" className="h-20 w-20 object-contain mx-auto mb-4" />
         <h1 className="text-lg font-semibold text-brand-700">Kinbidhoo School</h1>

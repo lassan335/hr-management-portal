@@ -1,5 +1,6 @@
 import { Routes, Route } from "react-router-dom";
 import { AuthProvider } from "./lib/AuthContext";
+import { ThemeProvider } from "./lib/ThemeContext";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
@@ -12,20 +13,22 @@ import { LeavePage } from "./pages/leave/LeavePage";
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route element={<ProtectedRoute />}>
-          <Route element={<Layout />}>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/staff" element={<StaffPage />} />
-            <Route path="/staff/:id" element={<StaffDetailPage />} />
-            <Route path="/attendance" element={<AttendancePage />} />
-            <Route path="/overtime" element={<OvertimePage />} />
-            <Route path="/leave" element={<LeavePage />} />
+    <ThemeProvider>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route element={<ProtectedRoute />}>
+            <Route element={<Layout />}>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/staff" element={<StaffPage />} />
+              <Route path="/staff/:id" element={<StaffDetailPage />} />
+              <Route path="/attendance" element={<AttendancePage />} />
+              <Route path="/overtime" element={<OvertimePage />} />
+              <Route path="/leave" element={<LeavePage />} />
+            </Route>
           </Route>
-        </Route>
-      </Routes>
-    </AuthProvider>
+        </Routes>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

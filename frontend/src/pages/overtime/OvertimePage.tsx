@@ -4,6 +4,7 @@ import { useAuth } from "../../lib/AuthContext";
 import { ApiError } from "../../lib/api";
 import { overtimeApi } from "../../lib/overtimeApi";
 import type { OvertimeRequestRow, MonthlySummary, DashboardRow, LedgerRow } from "../../lib/overtimeApi";
+import { Badge, StatusBadge } from "../../components/ui";
 
 const now = new Date();
 
@@ -98,9 +99,9 @@ function SubmitAndList() {
                 <td className="px-2 py-1">{formatTime(r.timeIn)}</td>
                 <td className="px-2 py-1">{formatTime(r.timeOut)}</td>
                 <td className="px-2 py-1">{r.hodReviewer?.fullName ?? r.hrReviewer?.fullName ?? "—"}</td>
-                <td className="px-2 py-1">{r.status === "APPROVED" ? "Yes" : r.status === "REJECTED" ? "Rejected" : "Pending"}</td>
-                <td className="px-2 py-1">{r.cancelled ? "Yes" : "No"}</td>
-                <td className="px-2 py-1">{r.workCompleted ? "Yes" : "No"}</td>
+                <td className="px-2 py-1"><StatusBadge status={r.status} /></td>
+                <td className="px-2 py-1">{r.cancelled ? <Badge tone="red">Cancelled</Badge> : <Badge tone="slate">No</Badge>}</td>
+                <td className="px-2 py-1">{r.workCompleted ? <Badge tone="green">Yes</Badge> : <Badge tone="slate">No</Badge>}</td>
                 <td className="px-2 py-1 space-x-2 whitespace-nowrap">
                   {canReview && (r.status === "PENDING_HOD" || r.status === "PENDING_HR") && (
                     <>

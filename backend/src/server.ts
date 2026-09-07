@@ -29,9 +29,19 @@ app.use(
     hsts: { maxAge: 15552000, includeSubDomains: true },
   })
 );
+// In development, also allow the same frontend reached over the local
+// network (e.g. from a phone on the same Wi-Fi) — production still only
+// ever allows the single configured FRONTEND_ORIGIN.
+const devLanOrigin = /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:5173$/;
 app.use(
   cors({
-    origin: env.frontendOrigin,
+    origin:
+      env.nodeEnv === "development"
+        ? (origin, cb) => {
+            if (!origin || origin === env.frontendOrigin || devLanOrigin.test(origin)) return cb(null, true);
+            cb(new Error("not allowed by CORS"));
+          }
+        : env.frontendOrigin,
     credentials: true,
   })
 );

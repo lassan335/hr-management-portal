@@ -14,9 +14,11 @@ export function buildTablePdf(params: {
   totalsRow?: (string | number)[];
   /** "Checked by" / "Approved by" style sign-off blocks at the bottom. */
   signoff?: { label: string; name?: string; designation?: string }[];
+  /** Wide reports (many columns, e.g. the OT Sheet) need landscape to fit. */
+  landscape?: boolean;
 }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    const doc = new PDFDocument({ margin: 40, size: "A4", layout: params.landscape ? "landscape" : "portrait" });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk) => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));

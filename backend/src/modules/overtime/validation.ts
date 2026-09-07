@@ -39,4 +39,9 @@ export const dashboardQuerySchema = z.object({
 
 export const reportQuerySchema = dashboardQuerySchema.extend({
   format: z.enum(["pdf", "excel"]).optional().default("excel"),
+  // Optional capping policy — see overtimeReport()'s doc comment. Left
+  // unset, the report shows true uncapped worked-hours cost.
+  normalCapHours: z.coerce.number().nonnegative().optional(),
+  holidayCapHours: z.coerce.number().nonnegative().optional(),
+  budgetCap: z.coerce.number().nonnegative().optional(),
 });

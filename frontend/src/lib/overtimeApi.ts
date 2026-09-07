@@ -38,7 +38,18 @@ export interface MonthlySummary {
   year: number;
   totalHours: number;
   totalCost: number;
-  rows: { date: string; timeIn: string; timeOut: string; hours: number; isHoliday: boolean; rateValue: number | null; cost: number | null }[];
+  rows: {
+    date: string;
+    timeIn: string;
+    timeOut: string;
+    hours: number;
+    isHoliday: boolean;
+    rateValue: number | null;
+    /** Hours actually paid, after the daily catch-up-to-8h deduction for
+     * staff on a shorter-than-8h shift (never less than 0, never more than `hours`). */
+    payableHours: number;
+    cost: number | null;
+  }[];
 }
 
 export interface DashboardRow {

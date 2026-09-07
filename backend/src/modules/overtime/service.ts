@@ -33,6 +33,17 @@ interface OtRateInfo {
    * Basic Salary configured (nothing to derive a rate from). */
   ratePerMinuteNormal: number | null;
   ratePerMinuteHoliday: number | null;
+  /** Hours of "catch-up" time on a normal working day that don't count as
+   * paid overtime yet — the gap between this staff member's own shift
+   * length and the school's uniform OT-eligibility threshold
+   * (env.overtimeEligibleThresholdHours, 8h by default). E.g. the Old
+   * Framework's 6h-shift staff must still reach 8h worked before OT pay
+   * starts, so the first 2h worked past their own shift end are unpaid
+   * catch-up time, not overtime — a New Framework 8h-shift staff member has
+   * gapHours = 0 since their shift already meets the threshold. Only
+   * applies to normal-day OT: a holiday has no assigned shift to catch up
+   * to, so holiday OT is never subject to this deduction. */
+  gapHours: number;
 }
 
 /** Batch-fetches the Basic-Salary-derived OT rate for a set of staff —
@@ -55,15 +66,41 @@ async function otRateInfoForStaffIds(staffIds: string[]): Promise<Map<string, Ot
       ratePerMinuteNormal = perMinuteBase * env.otNormalRateMultiplier;
       ratePerMinuteHoliday = perMinuteBase * env.otHolidayRateMultiplier;
     }
-    map.set(s.id, { basicSalary, ratePerMinuteNormal, ratePerMinuteHoliday });
+    const gapHours = Math.max(0, env.overtimeEligibleThresholdHours - standardDailyHours);
+    map.set(s.id, { basicSalary, ratePerMinuteNormal, ratePerMinuteHoliday, gapHours });
   }
   return map;
 }
 
-/** Uncapped cost for one slot — the 10%-of-Basic-Salary self-cap only makes
- * sense applied to a period's summed normal-day cost, not a single slot, so
- * callers showing a per-slot amount (the request list, the ledger) show the
- * true uncapped figure; only the monthly/report totals are capped. */
+/** Reduces one day's requested OT hours by whatever "catch-up" gap (see
+ * OtRateInfo.gapHours) is still unconsumed for that staff member on that
+ * date, so the deduction is applied once per staff+day rather than once per
+ * request — a staff member with two OT slots on the same date only has the
+ * gap taken out of the first one(s), not both. Callers must process a
+ * batch's requests in chronological order per staff and thread the same
+ * `gapRemaining` map through every call. Holiday OT is never reduced — a
+ * holiday has no assigned shift to "catch up" to. */
+function payableHoursFor(
+  info: OtRateInfo | undefined,
+  staffId: string,
+  date: Date,
+  hours: number,
+  isHoliday: boolean,
+  gapRemaining: Map<string, number>
+): number {
+  if (isHoliday || !info || info.gapHours <= 0) return hours;
+  const key = `${staffId}|${date.toISOString().slice(0, 10)}`;
+  const remaining = gapRemaining.has(key) ? gapRemaining.get(key)! : info.gapHours;
+  const deduction = Math.min(remaining, hours);
+  gapRemaining.set(key, round2(remaining - deduction));
+  return round2(hours - deduction);
+}
+
+/** Uncapped cost for one slot (given already gap-deducted payable hours) —
+ * the 10%-of-Basic-Salary self-cap only makes sense applied to a period's
+ * summed normal-day cost, not a single slot, so callers showing a per-slot
+ * amount (the request list, the ledger) show the true uncapped figure; only
+ * the monthly/report totals are capped. */
 function otCostForRequest(info: OtRateInfo | undefined, hours: number, isHoliday: boolean): number | null {
   const ratePerMinute = isHoliday ? info?.ratePerMinuteHoliday : info?.ratePerMinuteNormal;
   if (ratePerMinute == null) return null;
@@ -154,12 +191,22 @@ export async function listRequests(requester: AuthUser) {
 
   // Estimated amount per slot (uncapped — see otCostForRequest) so staff
   // can see roughly what a request is worth before it's even approved,
-  // not just once it appears in the monthly summary.
+  // not just once it appears in the monthly summary. The daily catch-up gap
+  // (see OtRateInfo.gapHours) must be applied in chronological order per
+  // staff+day, not in whatever order these rows happen to be returned in.
   const rateMap = await otRateInfoForStaffIds(requests.map((r) => r.staffId));
-  return requests.map((r) => ({
-    ...r,
-    estimatedCost: otCostForRequest(rateMap.get(r.staffId), hoursBetween(r.timeIn, r.timeOut), r.isHoliday),
-  }));
+  const chronological = [...requests].sort(
+    (a, b) => a.staffId.localeCompare(b.staffId) || a.date.getTime() - b.date.getTime() || a.timeIn.getTime() - b.timeIn.getTime()
+  );
+  const gapRemaining = new Map<string, number>();
+  const costById = new Map<string, number | null>();
+  for (const r of chronological) {
+    const info = rateMap.get(r.staffId);
+    const payable = payableHoursFor(info, r.staffId, r.date, hoursBetween(r.timeIn, r.timeOut), r.isHoliday, gapRemaining);
+    costById.set(r.id, otCostForRequest(info, payable, r.isHoliday));
+  }
+
+  return requests.map((r) => ({ ...r, estimatedCost: costById.get(r.id) ?? null }));
 }
 
 export async function reviewRequest(
@@ -298,7 +345,7 @@ async function payableRequestsInMonth(staffId: string, month: number, year: numb
   const { from, to } = otPeriodRange(month, year);
   return prisma.overtimeRequest.findMany({
     where: { staffId, status: "APPROVED", workCompleted: true, cancelled: false, date: { gte: from, lte: to } },
-    orderBy: { date: "asc" },
+    orderBy: [{ date: "asc" }, { timeIn: "asc" }],
     include: { staff: { select: { departmentId: true } } },
   });
 }
@@ -319,10 +366,15 @@ export async function monthlySummary(requester: AuthUser, requestedStaffId: stri
   let totalHours = 0;
   let normalCostRaw = 0;
   let holidayCost = 0;
+  const gapRemaining = new Map<string, number>();
   const rows = requests.map((r) => {
     const hours = hoursBetween(r.timeIn, r.timeOut);
     totalHours += hours;
-    const cost = otCostForRequest(info, hours, r.isHoliday);
+    // See OtRateInfo.gapHours — a 6h-shift staff member's first 2h past
+    // their own shift end just catches them up to the school's 8h
+    // eligibility threshold and isn't paid as overtime.
+    const payableHours = payableHoursFor(info, staffId, r.date, hours, r.isHoliday, gapRemaining);
+    const cost = otCostForRequest(info, payableHours, r.isHoliday);
     if (cost !== null) {
       if (r.isHoliday) holidayCost += cost;
       else normalCostRaw += cost;
@@ -332,7 +384,7 @@ export async function monthlySummary(requester: AuthUser, requestedStaffId: stri
     // underlying formula works in per-minute terms.
     const ratePerMinute = r.isHoliday ? info?.ratePerMinuteHoliday ?? null : info?.ratePerMinuteNormal ?? null;
     const rateValue = ratePerMinute != null ? round2(ratePerMinute * 60) : null;
-    return { date: r.date, timeIn: r.timeIn, timeOut: r.timeOut, hours, isHoliday: r.isHoliday, rateValue, cost };
+    return { date: r.date, timeIn: r.timeIn, timeOut: r.timeOut, hours, isHoliday: r.isHoliday, rateValue, payableHours, cost };
   });
 
   // Same self-cap as overtimeReport(): normal-day OT capped at otSelfCapPercent
@@ -452,6 +504,14 @@ export async function departmentDashboard(requester: AuthUser, departmentId: str
  * haircut) — otherwise it equals Self Capped (Only) unchanged.
  * A staff member with no Basic Salary configured shows uncapped hours
  * only — there's nothing to compute a salary-derived rate from.
+ *
+ * Deducted Hrs / Eligible Hrs = the daily "catch-up" gap taken out of
+ * normal-day hours before it's paid (see OtRateInfo.gapHours) — a 6h-shift
+ * staff member must reach 8h worked before OT pay starts, so up to 2h/day
+ * of their normal-day hours are unpaid catch-up time, not overtime.
+ * Eligible Hrs = Normal Hrs − Deducted Hrs, and all cost figures below are
+ * already computed from Eligible Hrs (via monthlySummary's per-row cost),
+ * not raw Normal Hrs.
  */
 export async function overtimeReport(requester: AuthUser, departmentId: string | undefined, month: number, year: number) {
   let deptId = departmentId;
@@ -463,42 +523,34 @@ export async function overtimeReport(requester: AuthUser, departmentId: string |
 
   const staffList = await prisma.staff.findMany({
     where: deptId ? { departmentId: deptId } : {},
-    select: {
-      id: true,
-      fullName: true,
-      staffId: true,
-      designation: true,
-      staffGroup: true,
-      bankDetails: { select: { basicSalaryEnc: true } },
-    },
+    select: { id: true, fullName: true, staffId: true, designation: true },
     orderBy: { staffId: "asc" },
   });
+
+  const rateMap = await otRateInfoForStaffIds(staffList.map((s) => s.id));
 
   const rows = await Promise.all(
     staffList.map(async (s) => {
       const summary = await monthlySummary(requester, s.id, month, year).catch(() => null);
       let normalHours = 0;
+      let deductedHours = 0;
       let holidayHours = 0;
-      for (const r of summary?.rows ?? []) {
-        if (r.isHoliday) holidayHours += r.hours;
-        else normalHours += r.hours;
-      }
-
-      const basicSalary = s.bankDetails?.basicSalaryEnc ? Number(decryptField(s.bankDetails.basicSalaryEnc)) : null;
-      const standardDailyHours = shiftSettingsFor(s.staffGroup).standardDailyHours;
-
       let normalCostRaw = 0;
       let holidayCost = 0;
-      let selfCappedAmount = 0;
-      if (basicSalary != null && standardDailyHours > 0) {
-        const perMinuteBase = basicSalary / env.otRateCalendarDays / (standardDailyHours * 60);
-        const ratePerMinuteNormal = perMinuteBase * env.otNormalRateMultiplier;
-        const ratePerMinuteHoliday = perMinuteBase * env.otHolidayRateMultiplier;
-        normalCostRaw = normalHours * 60 * ratePerMinuteNormal;
-        holidayCost = holidayHours * 60 * ratePerMinuteHoliday;
-        const normalCostCapped = Math.min(normalCostRaw, basicSalary * env.otSelfCapPercent);
-        selfCappedAmount = round2(normalCostCapped + holidayCost);
+      for (const r of summary?.rows ?? []) {
+        if (r.isHoliday) {
+          holidayHours += r.hours;
+          holidayCost += r.cost ?? 0;
+        } else {
+          normalHours += r.hours;
+          deductedHours += round2(r.hours - r.payableHours);
+          normalCostRaw += r.cost ?? 0;
+        }
       }
+
+      const basicSalary = rateMap.get(s.id)?.basicSalary ?? null;
+      const normalCostCapped = basicSalary != null ? Math.min(normalCostRaw, basicSalary * env.otSelfCapPercent) : normalCostRaw;
+      const selfCappedAmount = round2(normalCostCapped + holidayCost);
 
       return {
         staffId: s.id,
@@ -507,6 +559,8 @@ export async function overtimeReport(requester: AuthUser, departmentId: string |
         designation: s.designation,
         basicSalary,
         normalHours: round2(normalHours),
+        deductedHours: round2(deductedHours),
+        eligibleHours: round2(normalHours - deductedHours),
         holidayHours: round2(holidayHours),
         totalCost: round2(normalCostRaw + holidayCost),
         selfCappedAmount,
@@ -542,10 +596,12 @@ export async function overtimeReportPdf(requester: AuthUser, departmentId: strin
     columns: [
       { header: "#", width: 25 },
       { header: "Staff ID", width: 60 },
-      { header: "Name", width: 110 },
-      { header: "Designation", width: 100 },
+      { header: "Name", width: 95 },
+      { header: "Designation", width: 90 },
       { header: "Basic Salary", width: 65 },
       { header: "Normal Hrs", width: 55 },
+      { header: "Deducted", width: 50 },
+      { header: "Eligible Hrs", width: 55 },
       { header: "Holiday Hrs", width: 55 },
       { header: "OT w/o Cap", width: 65 },
       { header: "Self Capped", width: 65 },
@@ -558,12 +614,14 @@ export async function overtimeReportPdf(requester: AuthUser, departmentId: strin
       r.designation,
       r.basicSalary ?? "—",
       r.normalHours,
+      r.deductedHours,
+      r.eligibleHours,
       r.holidayHours,
       r.totalCost,
       r.selfCappedAmount,
       r.allCappedFinal,
     ]),
-    totalsRow: ["", "", "", "Total", "", "", "", totalWithoutCap, totalSelfCapped, totalAllCapped],
+    totalsRow: ["", "", "", "Total", "", "", "", "", "", totalWithoutCap, totalSelfCapped, totalAllCapped],
     signoff: [{ label: "Checked by" }, { label: "Approved by" }],
   });
 }
@@ -581,6 +639,8 @@ export async function overtimeReportExcel(requester: AuthUser, departmentId: str
       { header: "Designation", key: "designation", width: 24 },
       { header: "Basic Salary", key: "basicSalary", width: 14, money: true },
       { header: "Normal Hrs", key: "normalHours", width: 12, money: true },
+      { header: "Deducted Hrs", key: "deductedHours", width: 12, money: true },
+      { header: "Eligible Hrs", key: "eligibleHours", width: 12, money: true },
       { header: "Holiday Hrs", key: "holidayHours", width: 12, money: true },
       { header: "OT Worked (Without Cap)", key: "totalCost", width: 20, money: true },
       { header: "Self Capped (Only)", key: "selfCappedAmount", width: 16, money: true },
@@ -630,9 +690,26 @@ export async function ledger(requester: AuthUser, departmentId: string | undefin
   });
 
   const rateMap = await otRateInfoForStaffIds(requests.map((r) => r.staff.id));
+
+  // Apply the daily catch-up gap (see OtRateInfo.gapHours) once per
+  // staff+day, in chronological order — this listing is ordered [date,
+  // staffId] for display, which doesn't guarantee same-day slots for one
+  // staff member are adjacent in timeIn order.
+  const chronological = [...requests].sort(
+    (a, b) => a.staff.id.localeCompare(b.staff.id) || a.date.getTime() - b.date.getTime() || a.timeIn.getTime() - b.timeIn.getTime()
+  );
+  const gapRemaining = new Map<string, number>();
+  const payableById = new Map<string, number>();
+  for (const r of chronological) {
+    const info = rateMap.get(r.staff.id);
+    const hours = hoursBetween(r.timeIn, r.timeOut);
+    payableById.set(r.id, payableHoursFor(info, r.staff.id, r.date, hours, r.isHoliday, gapRemaining));
+  }
+
   return requests.map((r) => {
     const info = rateMap.get(r.staff.id);
     const hours = hoursBetween(r.timeIn, r.timeOut);
+    const payableHours = payableById.get(r.id) ?? hours;
     const ratePerMinute = r.isHoliday ? info?.ratePerMinuteHoliday ?? null : info?.ratePerMinuteNormal ?? null;
     const rateValue = ratePerMinute != null ? round2(ratePerMinute * 60) : null;
     return {
@@ -646,7 +723,7 @@ export async function ledger(requester: AuthUser, departmentId: string | undefin
       isHoliday: r.isHoliday,
       description: r.reason,
       rateValue,
-      cost: otCostForRequest(info, hours, r.isHoliday),
+      cost: otCostForRequest(info, payableHours, r.isHoliday),
     };
   });
 }

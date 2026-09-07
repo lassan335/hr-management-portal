@@ -182,7 +182,11 @@ function MonthlySummaryCard({ month, year }: { month: number; year: number }) {
           <p className="text-sm text-slate-600 mb-2">Total: {summary.totalHours}h — estimated cost {summary.totalCost}</p>
           <ul className="text-xs text-slate-500 space-y-0.5">
             {summary.rows.map((r, i) => (
-              <li key={i}>{r.date.slice(0, 10)}: {formatTime(r.timeIn)}–{formatTime(r.timeOut)} ({r.hours}h){r.isHoliday ? " (holiday)" : ""} — rate {r.rateValue ?? "n/a"}, cost {r.cost ?? "n/a"}</li>
+              <li key={i}>
+                {r.date.slice(0, 10)}: {formatTime(r.timeIn)}–{formatTime(r.timeOut)} ({r.hours}h
+                {r.payableHours !== r.hours ? `, ${r.payableHours}h payable — ${r.hours - r.payableHours}h deducted (catch-up to 8h)` : ""}
+                ){r.isHoliday ? " (holiday)" : ""} — rate {r.rateValue ?? "n/a"}, cost {r.cost ?? "n/a"}
+              </li>
             ))}
           </ul>
         </>

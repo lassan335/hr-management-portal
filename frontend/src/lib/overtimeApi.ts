@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, API_URL } from "./api";
 
 export interface OvertimeRequestRow {
   id: string;
@@ -59,8 +59,6 @@ export interface LedgerRow {
   rateValue: number | null;
   cost: number | null;
 }
-
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 export const overtimeApi = {
   submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string; isHoliday?: boolean }) =>

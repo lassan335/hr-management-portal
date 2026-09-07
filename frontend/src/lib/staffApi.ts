@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, API_URL } from "./api";
 
 export interface StaffSummaryRow {
   id: string;
@@ -103,8 +103,6 @@ export const staffApi = {
       `/api/staff/${id}/documents`
     ),
 };
-
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 export async function uploadStaffDocument(staffId: string, file: File, docType: string) {
   const form = new FormData();

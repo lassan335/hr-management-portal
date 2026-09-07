@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, API_URL } from "./api";
 
 export type PunchType = "CHECK_IN" | "CHECK_OUT" | "BREAK_IN" | "BREAK_OUT" | "OVERTIME_IN" | "OVERTIME_OUT";
 
@@ -53,8 +53,6 @@ export interface CorrectionRequest {
   status: string;
   staff?: { fullName: string; staffId: string };
 }
-
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 export const attendanceApi = {
   clock: (punchType: PunchType) => api.post("/api/attendance/clock", { punchType }),

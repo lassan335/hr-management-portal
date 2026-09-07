@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, API_URL } from "./api";
 
 export interface PayrollReadyStaff {
   id: string;
@@ -49,8 +49,6 @@ export interface SalarySlip {
   totalIncome: number;
   netPay: number;
 }
-
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 export const payrollApi = {
   ready: (departmentId?: string) => {

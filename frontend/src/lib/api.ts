@@ -1,4 +1,12 @@
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+// Falls back to whatever host the page itself was loaded from (rather than
+// a hardcoded "localhost") so the API call stays same-site as the page —
+// e.g. opened via a LAN IP for phone testing, the API call goes to that
+// same IP too. A cross-site call (page on localhost, API on a LAN IP, or
+// vice versa) makes the login cookie's SameSite=Lax silently drop it on
+// every request after the initial POST, breaking auth in a way that's easy
+// to misread as "the feature is broken" rather than "the cookie never made
+// it back". Set VITE_API_URL explicitly (e.g. for production) to override.
+export const API_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:4000`;
 
 export class ApiError extends Error {
   status: number;

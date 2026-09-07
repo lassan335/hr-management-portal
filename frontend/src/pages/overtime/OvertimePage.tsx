@@ -87,6 +87,7 @@ function SubmitAndList() {
               <th className="px-2 py-1">Approved</th>
               <th className="px-2 py-1">Cancelled</th>
               <th className="px-2 py-1">Work Completed</th>
+              <th className="px-2 py-1">Amount</th>
               <th className="px-2 py-1">Actions</th>
             </tr>
           </thead>
@@ -102,6 +103,7 @@ function SubmitAndList() {
                 <td className="px-2 py-1"><StatusBadge status={r.status} /></td>
                 <td className="px-2 py-1">{r.cancelled ? <Badge tone="red">Cancelled</Badge> : <Badge tone="slate">No</Badge>}</td>
                 <td className="px-2 py-1">{r.workCompleted ? <Badge tone="green">Yes</Badge> : <Badge tone="slate">No</Badge>}</td>
+                <td className="px-2 py-1">{r.estimatedCost != null ? `MVR ${r.estimatedCost}` : "—"}</td>
                 <td className="px-2 py-1 space-x-2 whitespace-nowrap">
                   {canReview && (r.status === "PENDING_HOD" || r.status === "PENDING_HR") && (
                     <>
@@ -120,7 +122,7 @@ function SubmitAndList() {
             ))}
             {list.length === 0 && (
               <tr>
-                <td colSpan={canReview ? 10 : 9} className="text-slate-400 px-2 py-2">None.</td>
+                <td colSpan={canReview ? 11 : 10} className="text-slate-400 px-2 py-2">None.</td>
               </tr>
             )}
           </tbody>

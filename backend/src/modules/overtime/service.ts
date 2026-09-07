@@ -22,17 +22,52 @@ async function currentRate(departmentId: string, atDate: Date) {
   });
 }
 
-function rateValueFor(
-  rate: { weekdayRate: unknown; weekendRate: unknown; holidayRate: unknown } | null,
-  date: Date,
-  isHoliday: boolean
-): number | null {
-  if (!rate) return null;
-  // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday.
-  const dayOfWeek = date.getDay();
-  if (isHoliday) return Number(rate.holidayRate);
-  if (dayOfWeek === 5 || dayOfWeek === 6) return Number(rate.weekendRate);
-  return Number(rate.weekdayRate);
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+interface OtRateInfo {
+  basicSalary: number | null;
+  /** Per-minute rate, not per-hour — see overtimeReport()'s doc comment for
+   * the verified formula this comes from. Null when the staff member has no
+   * Basic Salary configured (nothing to derive a rate from). */
+  ratePerMinuteNormal: number | null;
+  ratePerMinuteHoliday: number | null;
+}
+
+/** Batch-fetches the Basic-Salary-derived OT rate for a set of staff —
+ * shared by every place an OT amount is shown (the individual monthly
+ * summary, a staff member's own request list, the HR ledger, and the
+ * school-wide report) so they never silently disagree with each other. */
+async function otRateInfoForStaffIds(staffIds: string[]): Promise<Map<string, OtRateInfo>> {
+  const staffList = await prisma.staff.findMany({
+    where: { id: { in: [...new Set(staffIds)] } },
+    select: { id: true, staffGroup: true, bankDetails: { select: { basicSalaryEnc: true } } },
+  });
+  const map = new Map<string, OtRateInfo>();
+  for (const s of staffList) {
+    const basicSalary = s.bankDetails?.basicSalaryEnc ? Number(decryptField(s.bankDetails.basicSalaryEnc)) : null;
+    const standardDailyHours = shiftSettingsFor(s.staffGroup).standardDailyHours;
+    let ratePerMinuteNormal: number | null = null;
+    let ratePerMinuteHoliday: number | null = null;
+    if (basicSalary != null && standardDailyHours > 0) {
+      const perMinuteBase = basicSalary / env.otRateCalendarDays / (standardDailyHours * 60);
+      ratePerMinuteNormal = perMinuteBase * env.otNormalRateMultiplier;
+      ratePerMinuteHoliday = perMinuteBase * env.otHolidayRateMultiplier;
+    }
+    map.set(s.id, { basicSalary, ratePerMinuteNormal, ratePerMinuteHoliday });
+  }
+  return map;
+}
+
+/** Uncapped cost for one slot — the 10%-of-Basic-Salary self-cap only makes
+ * sense applied to a period's summed normal-day cost, not a single slot, so
+ * callers showing a per-slot amount (the request list, the ledger) show the
+ * true uncapped figure; only the monthly/report totals are capped. */
+function otCostForRequest(info: OtRateInfo | undefined, hours: number, isHoliday: boolean): number | null {
+  const ratePerMinute = isHoliday ? info?.ratePerMinuteHoliday : info?.ratePerMinuteNormal;
+  if (ratePerMinute == null) return null;
+  return round2(hours * 60 * ratePerMinute);
 }
 
 /** Combines a calendar date with an "HH:mm" string. If timeOut is not after
@@ -96,25 +131,35 @@ export async function submitRequest(
 }
 
 export async function listRequests(requester: AuthUser) {
+  let requests;
   if (requester.role === Role.HR_ADMIN) {
-    return prisma.overtimeRequest.findMany({
+    requests = await prisma.overtimeRequest.findMany({
       where: { status: { in: ["PENDING_HOD", "PENDING_HR"] }, cancelled: false },
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
     });
-  }
-  if (requester.role === Role.HOD) {
-    return prisma.overtimeRequest.findMany({
+  } else if (requester.role === Role.HOD) {
+    requests = await prisma.overtimeRequest.findMany({
       where: { status: "PENDING_HOD", cancelled: false, staff: { departmentId: requester.departmentId ?? "__none__" } },
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
     });
+  } else {
+    requests = await prisma.overtimeRequest.findMany({
+      where: { staffId: requester.staffId },
+      orderBy: { createdAt: "desc" },
+      include: { hodReviewer: { select: { fullName: true } }, hrReviewer: { select: { fullName: true } } },
+    });
   }
-  return prisma.overtimeRequest.findMany({
-    where: { staffId: requester.staffId },
-    orderBy: { createdAt: "desc" },
-    include: { hodReviewer: { select: { fullName: true } }, hrReviewer: { select: { fullName: true } } },
-  });
+
+  // Estimated amount per slot (uncapped — see otCostForRequest) so staff
+  // can see roughly what a request is worth before it's even approved,
+  // not just once it appears in the monthly summary.
+  const rateMap = await otRateInfoForStaffIds(requests.map((r) => r.staffId));
+  return requests.map((r) => ({
+    ...r,
+    estimatedCost: otCostForRequest(rateMap.get(r.staffId), hoursBetween(r.timeIn, r.timeOut), r.isHoliday),
+  }));
 }
 
 export async function reviewRequest(
@@ -268,19 +313,36 @@ export async function monthlySummary(requester: AuthUser, requestedStaffId: stri
   }
 
   const requests = await payableRequestsInMonth(staffId, month, year);
+  const rateMap = await otRateInfoForStaffIds([staffId]);
+  const info = rateMap.get(staffId);
+
   let totalHours = 0;
-  let totalCost = 0;
-  const rows = [];
-  for (const r of requests) {
-    const rate = await currentRate(r.staff.departmentId, r.date);
-    const rateValue = rateValueFor(rate, r.date, r.isHoliday);
+  let normalCostRaw = 0;
+  let holidayCost = 0;
+  const rows = requests.map((r) => {
     const hours = hoursBetween(r.timeIn, r.timeOut);
-    const cost = rateValue !== null ? hours * rateValue : null;
     totalHours += hours;
-    if (cost !== null) totalCost += cost;
-    rows.push({ date: r.date, timeIn: r.timeIn, timeOut: r.timeOut, hours, isHoliday: r.isHoliday, rateValue, cost });
-  }
-  return { staffId, month, year, totalHours: Math.round(totalHours * 100) / 100, totalCost: Math.round(totalCost * 100) / 100, rows };
+    const cost = otCostForRequest(info, hours, r.isHoliday);
+    if (cost !== null) {
+      if (r.isHoliday) holidayCost += cost;
+      else normalCostRaw += cost;
+    }
+    // Displayed as an hourly-equivalent rate (rate/min * 60) so it reads
+    // like the familiar MVR-per-hour figures HR is used to, even though the
+    // underlying formula works in per-minute terms.
+    const ratePerMinute = r.isHoliday ? info?.ratePerMinuteHoliday ?? null : info?.ratePerMinuteNormal ?? null;
+    const rateValue = ratePerMinute != null ? round2(ratePerMinute * 60) : null;
+    return { date: r.date, timeIn: r.timeIn, timeOut: r.timeOut, hours, isHoliday: r.isHoliday, rateValue, cost };
+  });
+
+  // Same self-cap as overtimeReport(): normal-day OT capped at otSelfCapPercent
+  // of Basic Salary; holiday OT is never capped. Applied to the aggregate,
+  // not per-row, matching the source workbook's methodology.
+  const basicSalary = info?.basicSalary ?? null;
+  const normalCostCapped = basicSalary != null ? Math.min(normalCostRaw, basicSalary * env.otSelfCapPercent) : normalCostRaw;
+  const totalCost = round2(normalCostCapped + holidayCost);
+
+  return { staffId, month, year, totalHours: round2(totalHours), totalCost, rows };
 }
 
 export async function monthlySummaryCsv(requester: AuthUser, requestedStaffId: string | undefined, month: number, year: number) {
@@ -362,10 +424,6 @@ export async function departmentDashboard(requester: AuthUser, departmentId: str
     })
   );
   return rows;
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
 
 /**
@@ -571,24 +629,24 @@ export async function ledger(requester: AuthUser, departmentId: string | undefin
     include: { staff: { select: { id: true, staffId: true, fullName: true, departmentId: true } } },
   });
 
-  return Promise.all(
-    requests.map(async (r) => {
-      const rate = await currentRate(r.staff.departmentId, r.date);
-      const rateValue = rateValueFor(rate, r.date, r.isHoliday);
-      const hours = hoursBetween(r.timeIn, r.timeOut);
-      return {
-        staffId: r.staff.id,
-        staffCode: r.staff.staffId,
-        fullName: r.staff.fullName,
-        date: r.date,
-        timeIn: r.timeIn,
-        timeOut: r.timeOut,
-        hours,
-        isHoliday: r.isHoliday,
-        description: r.reason,
-        rateValue,
-        cost: rateValue !== null ? hours * rateValue : null,
-      };
-    })
-  );
+  const rateMap = await otRateInfoForStaffIds(requests.map((r) => r.staff.id));
+  return requests.map((r) => {
+    const info = rateMap.get(r.staff.id);
+    const hours = hoursBetween(r.timeIn, r.timeOut);
+    const ratePerMinute = r.isHoliday ? info?.ratePerMinuteHoliday ?? null : info?.ratePerMinuteNormal ?? null;
+    const rateValue = ratePerMinute != null ? round2(ratePerMinute * 60) : null;
+    return {
+      staffId: r.staff.id,
+      staffCode: r.staff.staffId,
+      fullName: r.staff.fullName,
+      date: r.date,
+      timeIn: r.timeIn,
+      timeOut: r.timeOut,
+      hours,
+      isHoliday: r.isHoliday,
+      description: r.reason,
+      rateValue,
+      cost: otCostForRequest(info, hours, r.isHoliday),
+    };
+  });
 }

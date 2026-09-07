@@ -18,6 +18,9 @@ export interface OvertimeRequestRow {
   staff?: { fullName: string; staffId: string };
   hodReviewer?: { fullName: string } | null;
   hrReviewer?: { fullName: string } | null;
+  /** Uncapped estimated MVR amount for this single slot — see the backend's
+   * otCostForRequest(). Null when the staff member has no Basic Salary on file. */
+  estimatedCost?: number | null;
 }
 
 export interface OvertimeRate {

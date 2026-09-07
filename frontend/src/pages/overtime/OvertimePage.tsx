@@ -191,52 +191,28 @@ function MonthlySummaryCard({ month, year }: { month: number; year: number }) {
 
 function DashboardCard({ month, year }: { month: number; year: number }) {
   const [rows, setRows] = useState<DashboardRow[]>([]);
-  const [normalCapHours, setNormalCapHours] = useState("");
-  const [holidayCapHours, setHolidayCapHours] = useState("");
-  const [budgetCap, setBudgetCap] = useState("");
 
   useEffect(() => {
     overtimeApi.dashboard(month, year).then(setRows).catch(() => setRows([]));
   }, [month, year]);
-
-  const caps = {
-    normalCapHours: normalCapHours === "" ? undefined : Number(normalCapHours),
-    holidayCapHours: holidayCapHours === "" ? undefined : Number(holidayCapHours),
-    budgetCap: budgetCap === "" ? undefined : Number(budgetCap),
-  };
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-medium text-slate-700">Department Dashboard</h2>
         <span className="space-x-3">
-          <a href={overtimeApi.reportUrl(month, year, undefined, "excel", caps)} className="text-xs text-brand-600 hover:underline">
+          <a href={overtimeApi.reportUrl(month, year, undefined, "excel")} className="text-xs text-brand-600 hover:underline">
             Overtime Report (Excel)
           </a>
-          <a href={overtimeApi.reportUrl(month, year, undefined, "pdf", caps)} className="text-xs text-brand-600 hover:underline">
+          <a href={overtimeApi.reportUrl(month, year, undefined, "pdf")} className="text-xs text-brand-600 hover:underline">
             PDF
           </a>
         </span>
       </div>
-
-      <div className="flex flex-wrap gap-2 items-end text-xs mb-3 border-b border-slate-100 pb-3">
-        <span className="text-slate-400 self-center">
-          Optional caps for the Overtime Report (matches the legacy "Deducted"/"Eligible"/"Self Capped"/"All Capped"
-          columns) — leave blank to report true uncapped hours/cost:
-        </span>
-        <label className="flex flex-col">
-          Normal cap (hrs/staff)
-          <input type="number" min={0} step="0.5" value={normalCapHours} onChange={(e) => setNormalCapHours(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-28" />
-        </label>
-        <label className="flex flex-col">
-          Holiday cap (hrs/staff)
-          <input type="number" min={0} step="0.5" value={holidayCapHours} onChange={(e) => setHolidayCapHours(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-28" />
-        </label>
-        <label className="flex flex-col">
-          School OT budget (MVR)
-          <input type="number" min={0} step="1" value={budgetCap} onChange={(e) => setBudgetCap(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-28" />
-        </label>
-      </div>
+      <p className="text-xs text-slate-400 mb-3 border-b border-slate-100 pb-3">
+        The report's rate and capping (10% of Basic Salary per staff for normal-day OT, plus a school-wide OT budget
+        cap) are computed automatically — see Payroll for setting each staff member's Basic Salary.
+      </p>
 
       <table className="min-w-full text-sm">
         <thead className="text-left text-slate-500">

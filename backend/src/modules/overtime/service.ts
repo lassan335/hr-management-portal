@@ -8,6 +8,7 @@ import { nextApprovalStatus } from "../../lib/approvalChain";
 import { buildTablePdf } from "../../lib/pdf";
 import { buildReportExcel } from "../../lib/reportExcel";
 import { payPeriodRange } from "../../lib/dateRange";
+import { shiftSettingsFor } from "../attendance/timesheet";
 import { env } from "../../lib/env";
 import type { overtimeRequestSchema, rateSchema } from "./validation";
 import type { z } from "zod";
@@ -371,35 +372,30 @@ function round2(n: number): number {
  * Monthly OT Sheet — per-staff Normal/Holiday hour and cost breakdown for
  * the pay period, matching the legacy portal's school-wide overtime report.
  *
- * Deliberately NOT implemented here (see README's "Deferred / out of
- * scope"): the "Deducted"/"Eligible" hour columns and the "Self Capped"/
- * "All Capped" amount tiers — those depend on a capping rule (against basic
- * salary and/or a school-wide OT budget) that isn't configured anywhere in
- * this system, and guessing it would risk silently misreporting real pay
- * figures instead of leaving it correctly uncapped by default.
+ * The rate and capping formula is verified exact against a real payroll
+ * workbook's live formulas (its "Formula Deviation" and "OT CAP" sheets),
+ * not reverse-engineered from output numbers:
+ *   ratePerMinute(normal) = (Basic Salary / otRateCalendarDays)
+ *                            / (staff's standard daily hours * 60)
+ *                            * otNormalRateMultiplier
+ *   ratePerMinute(holiday) = same, * otHolidayRateMultiplier instead
+ * Only the current "New Pay Frame Work" formula is implemented — the
+ * source workbook's deprecated Old Framework and its separate Ramazan-
+ * month rate aren't (all of this school's pay periods are New Framework).
  *
- * `caps` lets HR apply a real policy when they have the actual numbers:
- * `normalCapHours`/`holidayCapHours` are a per-staff ceiling on eligible
- * hours for the whole period (hours worked beyond it are "Deducted", the
- * rest "Eligible" — Self Capped Amount pays only for eligible hours);
- * `budgetCap` is a single school-wide ceiling applied to the sum of every
- * staff member's Self Capped Amount in this report, distributed in the
- * report's row order (All Capped Final Amount). Leaving a cap unset pays
- * the true worked-hours cost for that column, same as before this existed.
+ * Self Capped (Only) = normal-day OT cost capped at otSelfCapPercent of
+ * Basic Salary, plus holiday OT cost (which this cap never touches) — the
+ * source workbook applies this same cap unconditionally, so this report
+ * does too rather than requiring HR to configure it.
+ * All Capped (Final) = a school-wide budget check on top: if the sum of
+ * every staff member's Self Capped amount in this report exceeds
+ * otBudgetCapPercent of everyone's summed Basic Salary, each person's
+ * payable amount is scaled down by the same proportion (a uniform
+ * haircut) — otherwise it equals Self Capped (Only) unchanged.
+ * A staff member with no Basic Salary configured shows uncapped hours
+ * only — there's nothing to compute a salary-derived rate from.
  */
-export interface OvertimeCapOptions {
-  normalCapHours?: number;
-  holidayCapHours?: number;
-  budgetCap?: number;
-}
-
-export async function overtimeReport(
-  requester: AuthUser,
-  departmentId: string | undefined,
-  month: number,
-  year: number,
-  caps: OvertimeCapOptions = {}
-) {
+export async function overtimeReport(requester: AuthUser, departmentId: string | undefined, month: number, year: number) {
   let deptId = departmentId;
   if (requester.role === Role.HOD) {
     deptId = requester.departmentId ?? "__none__";
@@ -407,11 +403,16 @@ export async function overtimeReport(
     throw new HttpError(403, "forbidden");
   }
 
-  const selfCapped = caps.normalCapHours != null || caps.holidayCapHours != null;
-
   const staffList = await prisma.staff.findMany({
     where: deptId ? { departmentId: deptId } : {},
-    select: { id: true, fullName: true, staffId: true, designation: true, bankDetails: { select: { basicSalaryEnc: true } } },
+    select: {
+      id: true,
+      fullName: true,
+      staffId: true,
+      designation: true,
+      staffGroup: true,
+      bankDetails: { select: { basicSalaryEnc: true } },
+    },
     orderBy: { staffId: "asc" },
   });
 
@@ -419,62 +420,50 @@ export async function overtimeReport(
     staffList.map(async (s) => {
       const summary = await monthlySummary(requester, s.id, month, year).catch(() => null);
       let normalHours = 0;
-      let normalCost = 0;
       let holidayHours = 0;
-      let holidayCost = 0;
       for (const r of summary?.rows ?? []) {
-        if (r.isHoliday) {
-          holidayHours += r.hours;
-          holidayCost += r.cost ?? 0;
-        } else {
-          normalHours += r.hours;
-          normalCost += r.cost ?? 0;
-        }
+        if (r.isHoliday) holidayHours += r.hours;
+        else normalHours += r.hours;
       }
 
-      const eligibleNormalHours = caps.normalCapHours != null ? Math.min(normalHours, caps.normalCapHours) : normalHours;
-      const eligibleHolidayHours = caps.holidayCapHours != null ? Math.min(holidayHours, caps.holidayCapHours) : holidayHours;
-      const deductedNormalHours = round2(normalHours - eligibleNormalHours);
-      const deductedHolidayHours = round2(holidayHours - eligibleHolidayHours);
-      // Scale each column's cost by its eligible share of worked hours —
-      // a defensible simplification when a period mixes several OT rates,
-      // since we cap total hours rather than picking which specific slots
-      // to disallow.
-      const selfCappedNormalCost = normalHours > 0 ? round2((eligibleNormalHours / normalHours) * normalCost) : 0;
-      const selfCappedHolidayCost = holidayHours > 0 ? round2((eligibleHolidayHours / holidayHours) * holidayCost) : 0;
-      const selfCappedAmount = round2(selfCappedNormalCost + selfCappedHolidayCost);
+      const basicSalary = s.bankDetails?.basicSalaryEnc ? Number(decryptField(s.bankDetails.basicSalaryEnc)) : null;
+      const standardDailyHours = shiftSettingsFor(s.staffGroup).standardDailyHours;
+
+      let normalCostRaw = 0;
+      let holidayCost = 0;
+      let selfCappedAmount = 0;
+      if (basicSalary != null && standardDailyHours > 0) {
+        const perMinuteBase = basicSalary / env.otRateCalendarDays / (standardDailyHours * 60);
+        const ratePerMinuteNormal = perMinuteBase * env.otNormalRateMultiplier;
+        const ratePerMinuteHoliday = perMinuteBase * env.otHolidayRateMultiplier;
+        normalCostRaw = normalHours * 60 * ratePerMinuteNormal;
+        holidayCost = holidayHours * 60 * ratePerMinuteHoliday;
+        const normalCostCapped = Math.min(normalCostRaw, basicSalary * env.otSelfCapPercent);
+        selfCappedAmount = round2(normalCostCapped + holidayCost);
+      }
 
       return {
         staffId: s.id,
         staffCode: s.staffId,
         fullName: s.fullName,
         designation: s.designation,
-        basicSalary: s.bankDetails?.basicSalaryEnc ? Number(decryptField(s.bankDetails.basicSalaryEnc)) : null,
-        selfCapped,
+        basicSalary,
         normalHours: round2(normalHours),
         holidayHours: round2(holidayHours),
-        deductedNormalHours,
-        deductedHolidayHours,
-        eligibleNormalHours: round2(eligibleNormalHours),
-        eligibleHolidayHours: round2(eligibleHolidayHours),
-        normalCost: round2(normalCost),
-        holidayCost: round2(holidayCost),
-        totalCost: round2(normalCost + holidayCost),
+        totalCost: round2(normalCostRaw + holidayCost),
         selfCappedAmount,
       };
     })
   );
 
-  // Budget cap: one school-wide ceiling on the sum of everyone's Self
-  // Capped Amount, distributed across staff in report order until exhausted.
-  let remainingBudget = caps.budgetCap ?? Infinity;
-  const withFinal = rows.map((r) => {
-    const allCappedFinal = round2(Math.min(r.selfCappedAmount, Math.max(0, remainingBudget)));
-    remainingBudget -= allCappedFinal;
-    return { ...r, allCappedFinal };
-  });
+  // School-wide budget cap: a uniform proportional haircut applied to
+  // everyone when the total exceeds the budget, otherwise a no-op.
+  const totalBasicSalary = rows.reduce((s, r) => s + (r.basicSalary ?? 0), 0);
+  const budget = totalBasicSalary * env.otBudgetCapPercent;
+  const totalSelfCapped = rows.reduce((s, r) => s + r.selfCappedAmount, 0);
+  const haircut = totalSelfCapped > budget && totalSelfCapped > 0 ? budget / totalSelfCapped : 1;
 
-  return withFinal;
+  return rows.map((r) => ({ ...r, allCappedFinal: round2(r.selfCappedAmount * haircut) }));
 }
 
 function otPeriodLabel(month: number, year: number): string {
@@ -483,14 +472,8 @@ function otPeriodLabel(month: number, year: number): string {
   return `${fmt(from)} to ${fmt(to)}`;
 }
 
-export async function overtimeReportPdf(
-  requester: AuthUser,
-  departmentId: string | undefined,
-  month: number,
-  year: number,
-  caps: OvertimeCapOptions = {}
-): Promise<Buffer> {
-  const rows = await overtimeReport(requester, departmentId, month, year, caps);
+export async function overtimeReportPdf(requester: AuthUser, departmentId: string | undefined, month: number, year: number): Promise<Buffer> {
+  const rows = await overtimeReport(requester, departmentId, month, year);
   const totalWithoutCap = round2(rows.reduce((s, r) => s + r.totalCost, 0));
   const totalSelfCapped = round2(rows.reduce((s, r) => s + r.selfCappedAmount, 0));
   const totalAllCapped = round2(rows.reduce((s, r) => s + r.allCappedFinal, 0));
@@ -499,52 +482,36 @@ export async function overtimeReportPdf(
     subtitle: `Kinbidhoo School — ${otPeriodLabel(month, year)}`,
     landscape: true,
     columns: [
-      { header: "#", width: 20 },
-      { header: "Staff ID", width: 50 },
-      { header: "Name", width: 80 },
-      { header: "Designation", width: 75 },
-      { header: "Self Capped", width: 40 },
-      { header: "Basic Salary", width: 50 },
-      { header: "Normal Hrs", width: 40 },
-      { header: "Holiday Hrs", width: 40 },
-      { header: "Ded. Normal", width: 42 },
-      { header: "Ded. Holiday", width: 42 },
-      { header: "Elig. Normal", width: 42 },
-      { header: "Elig. Holiday", width: 42 },
-      { header: "OT w/o Cap", width: 50 },
-      { header: "Self Capped", width: 50 },
-      { header: "All Capped", width: 50 },
+      { header: "#", width: 25 },
+      { header: "Staff ID", width: 60 },
+      { header: "Name", width: 110 },
+      { header: "Designation", width: 100 },
+      { header: "Basic Salary", width: 65 },
+      { header: "Normal Hrs", width: 55 },
+      { header: "Holiday Hrs", width: 55 },
+      { header: "OT w/o Cap", width: 65 },
+      { header: "Self Capped", width: 65 },
+      { header: "All Capped", width: 65 },
     ],
     rows: rows.map((r, i) => [
       i + 1,
       r.staffCode,
       r.fullName,
       r.designation,
-      r.selfCapped ? "YES" : "NO",
       r.basicSalary ?? "—",
       r.normalHours,
       r.holidayHours,
-      r.deductedNormalHours,
-      r.deductedHolidayHours,
-      r.eligibleNormalHours,
-      r.eligibleHolidayHours,
       r.totalCost,
       r.selfCappedAmount,
       r.allCappedFinal,
     ]),
-    totalsRow: ["", "", "", "", "", "Total", "", "", "", "", "", "", totalWithoutCap, totalSelfCapped, totalAllCapped],
+    totalsRow: ["", "", "", "Total", "", "", "", totalWithoutCap, totalSelfCapped, totalAllCapped],
     signoff: [{ label: "Checked by" }, { label: "Approved by" }],
   });
 }
 
-export async function overtimeReportExcel(
-  requester: AuthUser,
-  departmentId: string | undefined,
-  month: number,
-  year: number,
-  caps: OvertimeCapOptions = {}
-): Promise<Buffer> {
-  const rows = await overtimeReport(requester, departmentId, month, year, caps);
+export async function overtimeReportExcel(requester: AuthUser, departmentId: string | undefined, month: number, year: number): Promise<Buffer> {
+  const rows = await overtimeReport(requester, departmentId, month, year);
   return buildReportExcel({
     title: "Monthly OT Sheet",
     subtitle: `Kinbidhoo School — ${otPeriodLabel(month, year)}`,
@@ -554,22 +521,14 @@ export async function overtimeReportExcel(
       { header: "Staff ID", key: "staffCode", width: 12 },
       { header: "Name", key: "fullName", width: 24 },
       { header: "Designation", key: "designation", width: 24 },
-      { header: "Self Capped", key: "selfCappedLabel", width: 12 },
       { header: "Basic Salary", key: "basicSalary", width: 14, money: true },
       { header: "Normal Hrs", key: "normalHours", width: 12, money: true },
       { header: "Holiday Hrs", key: "holidayHours", width: 12, money: true },
-      { header: "Deducted Normal", key: "deductedNormalHours", width: 15, money: true },
-      { header: "Deducted Holiday", key: "deductedHolidayHours", width: 15, money: true },
-      { header: "Eligible Normal", key: "eligibleNormalHours", width: 14, money: true },
-      { header: "Eligible Holiday", key: "eligibleHolidayHours", width: 14, money: true },
       { header: "OT Worked (Without Cap)", key: "totalCost", width: 20, money: true },
       { header: "Self Capped (Only)", key: "selfCappedAmount", width: 16, money: true },
       { header: "All Capped (Final)", key: "allCappedFinal", width: 16, money: true },
     ],
-    rows: rows.map((r, i) => {
-      const { selfCapped, ...rest } = r;
-      return { n: i + 1, ...rest, selfCappedLabel: selfCapped ? "YES" : "NO", basicSalary: r.basicSalary ?? "" };
-    }),
+    rows: rows.map((r, i) => ({ n: i + 1, ...r, basicSalary: r.basicSalary ?? "" })),
     totalsRow: {
       designation: "Total",
       totalCost: round2(rows.reduce((s, r) => s + r.totalCost, 0)),

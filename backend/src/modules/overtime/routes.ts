@@ -118,14 +118,13 @@ export function overtimeRouter(): Router {
     requireRole(Role.HOD, Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const query = reportQuerySchema.parse(req.query);
-      const caps = { normalCapHours: query.normalCapHours, holidayCapHours: query.holidayCapHours, budgetCap: query.budgetCap };
       if (query.format === "pdf") {
-        const pdf = await service.overtimeReportPdf(req.user!, query.departmentId, query.month, query.year, caps);
+        const pdf = await service.overtimeReportPdf(req.user!, query.departmentId, query.month, query.year);
         res.setHeader("Content-Type", "application/pdf");
         res.setHeader("Content-Disposition", 'attachment; filename="overtime-report.pdf"');
         return res.send(pdf);
       }
-      const xlsx = await service.overtimeReportExcel(req.user!, query.departmentId, query.month, query.year, caps);
+      const xlsx = await service.overtimeReportExcel(req.user!, query.departmentId, query.month, query.year);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", 'attachment; filename="overtime-report.xlsx"');
       res.send(xlsx);

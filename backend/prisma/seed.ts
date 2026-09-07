@@ -181,7 +181,20 @@ async function main() {
         deviceUserId: s.deviceUserId,
         staffGroupId: s.staffGroupId,
       },
-      update: {},
+      // Re-sync the seed-controlled structural fields on every run (role,
+      // department, designation, device pairing, staff group) — an empty
+      // update here silently stopped applying staffGroupId to anyone
+      // already created before that field was added to this script, which
+      // is exactly the kind of regression this is meant to prevent. Doesn't
+      // touch contact/personal fields, which a demo user may have
+      // legitimately edited via the self-service flow.
+      update: {
+        role: s.role as any,
+        departmentId: s.departmentId,
+        designation: s.designation,
+        deviceUserId: s.deviceUserId,
+        staffGroupId: s.staffGroupId,
+      },
     });
     staffByCode[s.staffId] = created;
   }

@@ -69,6 +69,24 @@ export const env = {
   // OT/payroll reporting period runs <this day> of a month through
   // <this day - 1> of the next, not the calendar month (e.g. 16th -> 15th).
   otPeriodStartDay: Number(process.env.OT_PERIOD_START_DAY ?? 16),
+
+  // OT rate/capping formula — verified exact against a real payroll
+  // workbook's "Formula Deviation" and "OT CAP" sheets (live formulas, not
+  // guessed from output numbers). Per-minute rate = (Basic Salary /
+  // otRateCalendarDays) / (staff's standard daily hours * 60) * the
+  // relevant multiplier below. Only the "New Pay Frame Work" (current,
+  // post-Nov-2025) formula is implemented — the deprecated Old Framework
+  // and its separate Ramazan-month rate aren't.
+  otRateCalendarDays: Number(process.env.OT_RATE_CALENDAR_DAYS ?? 30),
+  otNormalRateMultiplier: Number(process.env.OT_NORMAL_RATE_MULTIPLIER ?? 1.25),
+  otHolidayRateMultiplier: Number(process.env.OT_HOLIDAY_RATE_MULTIPLIER ?? 1.5),
+  // Normal-day OT pay is capped at this fraction of Basic Salary per staff
+  // member per period (Public Holiday OT is never capped this way).
+  otSelfCapPercent: Number(process.env.OT_SELF_CAP_PERCENT ?? 0.1),
+  // School-wide OT budget = this fraction of everyone's Basic Salary
+  // summed. When total self-capped OT across the report exceeds it, every
+  // staff member's payable OT is scaled down by the same proportion.
+  otBudgetCapPercent: Number(process.env.OT_BUDGET_CAP_PERCENT ?? 0.1),
 };
 
 if (nodeEnv !== "production") {

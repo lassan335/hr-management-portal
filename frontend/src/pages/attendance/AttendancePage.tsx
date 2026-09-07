@@ -8,6 +8,7 @@ import type {
   SyncLogEntry,
   UnmatchedEntry,
   CorrectionRequest,
+  PunchType,
 } from "../../lib/attendanceApi";
 import { Badge, StatusBadge } from "../../components/ui";
 
@@ -49,19 +50,44 @@ export function AttendancePage() {
   );
 }
 
+const CLOCK_BUTTONS: { punchType: PunchType; label: string; className: string }[] = [
+  { punchType: "CHECK_IN", label: "Check In", className: "bg-brand-600 hover:bg-brand-700" },
+  { punchType: "CHECK_OUT", label: "Check Out", className: "bg-slate-800 hover:bg-slate-900" },
+  { punchType: "BREAK_IN", label: "Break In", className: "bg-amber-600 hover:bg-amber-700" },
+  { punchType: "BREAK_OUT", label: "Break Out", className: "bg-amber-500 hover:bg-amber-600" },
+  { punchType: "OVERTIME_IN", label: "Overtime In", className: "bg-purple-600 hover:bg-purple-700" },
+  { punchType: "OVERTIME_OUT", label: "Overtime Out", className: "bg-purple-500 hover:bg-purple-600" },
+];
+
 function ClockCard() {
   const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function punch(punchType?: "IN" | "OUT") {
-    const entry = await attendanceApi.clock(punchType) as { punchType: string; timestamp: string };
-    setMessage(`Clocked ${entry.punchType} at ${new Date(entry.timestamp).toLocaleTimeString()}.`);
+  async function punch(punchType: PunchType) {
+    setError(null);
+    try {
+      const entry = (await attendanceApi.clock(punchType)) as { punchType: string; timestamp: string };
+      setMessage(`Clocked ${entry.punchType.replace(/_/g, " ")} at ${new Date(entry.timestamp).toLocaleTimeString()}.`);
+    } catch (e) {
+      setError((e as Error).message || "Failed to clock.");
+    }
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 flex items-center gap-3">
-      <button onClick={() => punch("IN")} className="bg-brand-600 text-white text-sm px-4 py-2 rounded-md">Clock In</button>
-      <button onClick={() => punch("OUT")} className="bg-slate-800 text-white text-sm px-4 py-2 rounded-md">Clock Out</button>
-      {message && <span className="text-sm text-slate-500">{message}</span>}
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {CLOCK_BUTTONS.map((b) => (
+          <button
+            key={b.punchType}
+            onClick={() => punch(b.punchType)}
+            className={`text-white text-sm px-4 py-2 rounded-md ${b.className}`}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
+      {message && <p className="text-sm text-slate-500 mt-2">{message}</p>}
+      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
     </div>
   );
 }
@@ -97,6 +123,8 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
             <th className="px-2 py-1">First In</th>
             <th className="px-2 py-1">Last Out</th>
             <th className="px-2 py-1">Hours</th>
+            <th className="px-2 py-1">Break</th>
+            <th className="px-2 py-1">OT Punched</th>
             <th className="px-2 py-1">Flags</th>
           </tr>
         </thead>
@@ -107,6 +135,8 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
               <td className="px-2 py-1">{d.firstIn ? new Date(d.firstIn).toLocaleTimeString() : "—"}</td>
               <td className="px-2 py-1">{d.lastOut ? new Date(d.lastOut).toLocaleTimeString() : "—"}</td>
               <td className="px-2 py-1">{d.hoursWorked}</td>
+              <td className="px-2 py-1">{d.breakHours > 0 ? `${d.breakHours}h` : "—"}</td>
+              <td className="px-2 py-1">{d.otPunchedHours > 0 ? `${d.otPunchedHours}h` : "—"}</td>
               <td className="px-2 py-1 space-x-1 space-y-1">
                 {d.lateArrival && <Badge tone="amber">Late</Badge>}
                 {d.earlyDeparture && <Badge tone="amber">Early leave</Badge>}
@@ -117,7 +147,7 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
             </tr>
           ))}
           {days.length === 0 && (
-            <tr><td colSpan={5} className="px-2 py-4 text-center text-slate-400">No entries in range.</td></tr>
+            <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">No entries in range.</td></tr>
           )}
         </tbody>
       </table>
@@ -166,7 +196,7 @@ function DepartmentDashboard({ from, to }: { from: string; to: string }) {
 function CorrectionsSection() {
   const { user } = useAuth();
   const [list, setList] = useState<CorrectionRequest[]>([]);
-  const [form, setForm] = useState({ date: today(), requestedPunchType: "IN", requestedTime: "", reason: "" });
+  const [form, setForm] = useState({ date: today(), requestedPunchType: "CHECK_IN", requestedTime: "", reason: "" });
   const canReview = user?.role === Role.HOD || user?.role === Role.HR_ADMIN;
 
   async function refresh() {
@@ -184,7 +214,7 @@ function CorrectionsSection() {
         {list.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2">
             <span>
-              {c.staff ? `${c.staff.fullName} — ` : ""}{c.date.slice(0, 10)} {c.requestedPunchType} @{" "}
+              {c.staff ? `${c.staff.fullName} — ` : ""}{c.date.slice(0, 10)} {c.requestedPunchType.replace(/_/g, " ")} @{" "}
               {new Date(c.requestedTime).toLocaleTimeString()} — {c.reason}
             </span>
             <StatusBadge status={c.status} />
@@ -206,8 +236,12 @@ function CorrectionsSection() {
           </label>
           <label className="flex flex-col text-xs">Type
             <select value={form.requestedPunchType} onChange={(e) => setForm({ ...form, requestedPunchType: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1">
-              <option value="IN">IN</option>
-              <option value="OUT">OUT</option>
+              <option value="CHECK_IN">Check In</option>
+              <option value="CHECK_OUT">Check Out</option>
+              <option value="BREAK_IN">Break In</option>
+              <option value="BREAK_OUT">Break Out</option>
+              <option value="OVERTIME_IN">Overtime In</option>
+              <option value="OVERTIME_OUT">Overtime Out</option>
             </select>
           </label>
           <label className="flex flex-col text-xs">Time

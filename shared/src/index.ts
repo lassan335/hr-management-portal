@@ -37,8 +37,12 @@ export enum ApprovalStatus {
 }
 
 export enum PunchType {
-  IN = "IN",
-  OUT = "OUT",
+  CHECK_IN = "CHECK_IN",
+  CHECK_OUT = "CHECK_OUT",
+  BREAK_IN = "BREAK_IN",
+  BREAK_OUT = "BREAK_OUT",
+  OVERTIME_IN = "OVERTIME_IN",
+  OVERTIME_OUT = "OVERTIME_OUT",
 }
 
 export enum AttendanceSource {

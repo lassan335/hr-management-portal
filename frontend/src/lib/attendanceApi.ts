@@ -1,10 +1,14 @@
 import { api } from "./api";
 
+export type PunchType = "CHECK_IN" | "CHECK_OUT" | "BREAK_IN" | "BREAK_OUT" | "OVERTIME_IN" | "OVERTIME_OUT";
+
 export interface DayTimesheet {
   date: string;
   firstIn: string | null;
   lastOut: string | null;
   hoursWorked: number;
+  breakHours: number;
+  otPunchedHours: number;
   lateArrival: boolean;
   earlyDeparture: boolean;
   overtimeHours: number;
@@ -53,7 +57,7 @@ export interface CorrectionRequest {
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 export const attendanceApi = {
-  clock: (punchType?: "IN" | "OUT") => api.post("/api/attendance/clock", punchType ? { punchType } : {}),
+  clock: (punchType: PunchType) => api.post("/api/attendance/clock", { punchType }),
   timesheet: (from: string, to: string, staffId?: string) => {
     const params = new URLSearchParams({ from, to, ...(staffId ? { staffId } : {}) });
     return api.get<DayTimesheet[]>(`/api/attendance/timesheet?${params.toString()}`);

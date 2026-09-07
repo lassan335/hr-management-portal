@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
-import { PunchType, Role } from "@hr/shared";
+import { Role } from "@hr/shared";
 import { authenticate } from "../../lib/auth";
 import { requireRole } from "../../lib/rbac";
 import { requestMeta } from "../../lib/audit";
@@ -63,7 +63,7 @@ export function attendanceRouter(): Router {
     "/clock",
     asyncHandler(async (req, res) => {
       const { punchType } = clockSchema.parse(req.body);
-      res.status(201).json(await service.clockPunch(req.user!, punchType as PunchType | undefined));
+      res.status(201).json(await service.clockPunch(req.user!, punchType));
     })
   );
 

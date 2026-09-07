@@ -2,7 +2,7 @@ import { z } from "zod";
 import { PunchType } from "@hr/shared";
 
 export const clockSchema = z.object({
-  punchType: z.nativeEnum(PunchType).optional(),
+  punchType: z.nativeEnum(PunchType),
 });
 
 export const timesheetQuerySchema = z.object({

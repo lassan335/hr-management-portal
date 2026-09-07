@@ -33,8 +33,34 @@ const USER_ID_HEADERS = ["device user id", "user id", "ac-no", "enroll number", 
 const TIME_HEADERS = ["time", "date/time", "timestamp", "check time", "punch time"];
 const STATUS_HEADERS = ["status", "punch type", "c/i c/o", "state", "check type"];
 
-const CHECK_IN_VALUES = new Set(["check in", "c/in", "in", "checkin", "0"]);
-const CHECK_OUT_VALUES = new Set(["check out", "c/out", "out", "checkout", "1"]);
+// Numeric codes match the ZKTeco/ZKTime 5.0 firmware standard: 0=Check In,
+// 1=Check Out, 2=Break Out, 3=Break In, 4=Overtime In, 5=Overtime Out.
+const PUNCH_TYPE_VALUES: Record<string, PunchType> = {
+  "check in": PunchType.CHECK_IN,
+  "c/in": PunchType.CHECK_IN,
+  "checkin": PunchType.CHECK_IN,
+  "in": PunchType.CHECK_IN,
+  "0": PunchType.CHECK_IN,
+  "check out": PunchType.CHECK_OUT,
+  "c/out": PunchType.CHECK_OUT,
+  "checkout": PunchType.CHECK_OUT,
+  "out": PunchType.CHECK_OUT,
+  "1": PunchType.CHECK_OUT,
+  "break out": PunchType.BREAK_OUT,
+  "breakout": PunchType.BREAK_OUT,
+  "2": PunchType.BREAK_OUT,
+  "break in": PunchType.BREAK_IN,
+  "breakin": PunchType.BREAK_IN,
+  "3": PunchType.BREAK_IN,
+  "overtime in": PunchType.OVERTIME_IN,
+  "ot in": PunchType.OVERTIME_IN,
+  "otin": PunchType.OVERTIME_IN,
+  "4": PunchType.OVERTIME_IN,
+  "overtime out": PunchType.OVERTIME_OUT,
+  "ot out": PunchType.OVERTIME_OUT,
+  "otout": PunchType.OVERTIME_OUT,
+  "5": PunchType.OVERTIME_OUT,
+};
 
 function normalizeHeader(h: string): string {
   return h.trim().toLowerCase();
@@ -51,13 +77,13 @@ function findColumn(headers: string[], candidates: string[]): number {
 
 function parsePunchType(raw: string | undefined, fallbackIndexInDay: number): PunchType {
   if (raw) {
-    const v = raw.trim().toLowerCase();
-    if (CHECK_IN_VALUES.has(v)) return PunchType.IN;
-    if (CHECK_OUT_VALUES.has(v)) return PunchType.OUT;
+    const mapped = PUNCH_TYPE_VALUES[raw.trim().toLowerCase()];
+    if (mapped) return mapped;
   }
-  // No recognizable status column — fall back to strict alternation per
-  // device per day (common for bare punch-log exports with no direction column).
-  return fallbackIndexInDay % 2 === 0 ? PunchType.IN : PunchType.OUT;
+  // No recognizable status column — fall back to strict Check In/Check Out
+  // alternation per device per day (common for bare punch-log exports with
+  // no direction column; breaks/overtime can't be guessed without one).
+  return fallbackIndexInDay % 2 === 0 ? PunchType.CHECK_IN : PunchType.CHECK_OUT;
 }
 
 function parseTimestamp(raw: unknown): Date | null {

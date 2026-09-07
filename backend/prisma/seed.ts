@@ -291,18 +291,29 @@ async function main() {
   });
 
   // --- Sample manual time entries ----------------------------------------------
+  // KS-0006 demonstrates a lunch break (deducted from hoursWorked); KS-0007
+  // is a plain check-in/check-out day.
   const today = new Date();
   for (const code of ["KS-0006", "KS-0007"]) {
     const inTime = new Date(today);
     inTime.setHours(8, 5, 0, 0);
     const outTime = new Date(today);
     outTime.setHours(14, 20, 0, 0);
-    await prisma.timeEntry.createMany({
-      data: [
-        { staffId: staffByCode[code].id, timestamp: inTime, punchType: "IN", source: "MANUAL" },
-        { staffId: staffByCode[code].id, timestamp: outTime, punchType: "OUT", source: "MANUAL" },
-      ],
-    });
+    const entries: { staffId: string; timestamp: Date; punchType: string; source: "MANUAL" }[] = [
+      { staffId: staffByCode[code].id, timestamp: inTime, punchType: "CHECK_IN", source: "MANUAL" },
+    ];
+    if (code === "KS-0006") {
+      const breakStart = new Date(today);
+      breakStart.setHours(12, 0, 0, 0);
+      const breakEnd = new Date(today);
+      breakEnd.setHours(12, 30, 0, 0);
+      entries.push(
+        { staffId: staffByCode[code].id, timestamp: breakStart, punchType: "BREAK_OUT", source: "MANUAL" },
+        { staffId: staffByCode[code].id, timestamp: breakEnd, punchType: "BREAK_IN", source: "MANUAL" }
+      );
+    }
+    entries.push({ staffId: staffByCode[code].id, timestamp: outTime, punchType: "CHECK_OUT", source: "MANUAL" });
+    await prisma.timeEntry.createMany({ data: entries });
   }
 
   console.log("Seed complete.");

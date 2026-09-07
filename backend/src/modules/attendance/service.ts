@@ -16,15 +16,11 @@ import type { z } from "zod";
 
 type AuditMeta = { ipAddress?: string; userAgent?: string };
 
-export async function clockPunch(actor: AuthUser, override?: PunchType) {
-  let punchType = override;
-  if (!punchType) {
-    const last = await prisma.timeEntry.findFirst({
-      where: { staffId: actor.staffId },
-      orderBy: { timestamp: "desc" },
-    });
-    punchType = !last || last.punchType === PunchType.OUT ? PunchType.IN : PunchType.OUT;
-  }
+/** With six distinct punch types across three independent pairs (regular,
+ * break, overtime), there's no single sane "toggle the last punch" guess
+ * the way a plain IN/OUT clock could — the caller always says which of the
+ * six they mean (see the six explicit buttons on the Attendance page). */
+export async function clockPunch(actor: AuthUser, punchType: PunchType) {
   const entry = await prisma.timeEntry.create({
     data: { staffId: actor.staffId, timestamp: new Date(), punchType, source: "MANUAL" },
   });
@@ -55,9 +51,19 @@ export async function getTimesheet(requester: AuthUser, requestedStaffId: string
 
 export async function exportTimesheetCsv(requester: AuthUser, requestedStaffId: string | undefined, from: Date, to: Date) {
   const days = await getTimesheet(requester, requestedStaffId, from, to);
-  const header = "Date,First In,Last Out,Hours Worked,Late Arrival,Early Departure,Overtime Hours";
+  const header = "Date,First In,Last Out,Hours Worked,Break Hours,OT Punched Hours,Late Arrival,Early Departure,Overtime Hours";
   const rows = days.map((d) =>
-    [d.date, d.firstIn ?? "", d.lastOut ?? "", d.hoursWorked, d.lateArrival, d.earlyDeparture, d.overtimeHours]
+    [
+      d.date,
+      d.firstIn ?? "",
+      d.lastOut ?? "",
+      d.hoursWorked,
+      d.breakHours,
+      d.otPunchedHours,
+      d.lateArrival,
+      d.earlyDeparture,
+      d.overtimeHours,
+    ]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(",")
   );
@@ -92,7 +98,13 @@ export async function exportTimesheetPdf(
       d.firstIn ? new Date(d.firstIn).toLocaleTimeString() : "—",
       d.lastOut ? new Date(d.lastOut).toLocaleTimeString() : "—",
       d.hoursWorked,
-      [d.lateArrival && "Late", d.earlyDeparture && "Early leave", d.overtimeHours > 0 && `+${d.overtimeHours}h OT`]
+      [
+        d.lateArrival && "Late",
+        d.earlyDeparture && "Early leave",
+        d.breakHours > 0 && `${d.breakHours}h break`,
+        d.otPunchedHours > 0 && `${d.otPunchedHours}h OT punched`,
+        d.overtimeHours > 0 && `+${d.overtimeHours}h OT`,
+      ]
         .filter(Boolean)
         .join(", "),
     ]),

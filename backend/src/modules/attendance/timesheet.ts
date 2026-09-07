@@ -6,6 +6,15 @@ export interface DayTimesheet {
   firstIn: string | null;
   lastOut: string | null;
   hoursWorked: number;
+  /** Total time between paired BREAK_IN/BREAK_OUT punches, already excluded
+   * from hoursWorked above. */
+  breakHours: number;
+  /** Total time between paired OVERTIME_IN/OVERTIME_OUT punches — the
+   * staff member's ACTUAL clocked overtime, separate from `overtimeHours`
+   * below (which is just worked-time-over-standard-hours). Cross-checking
+   * the two against an approved OvertimeRequest slot is a further step not
+   * implemented here (see README's "Deferred / out of scope"). */
+  otPunchedHours: number;
   lateArrival: boolean;
   earlyDeparture: boolean;
   overtimeHours: number;
@@ -46,11 +55,20 @@ function parseShiftTime(dayDate: Date, hhmm: string): Date {
   return d;
 }
 
-/** Pairs chronological IN/OUT punches per calendar day into worked sessions,
+/** Pairs chronological CHECK_IN/CHECK_OUT punches per calendar day into
+ * worked sessions, subtracts any BREAK_IN/BREAK_OUT time from within them,
+ * tracks OVERTIME_IN/OVERTIME_OUT as a separate punched-overtime duration,
  * and flags late arrival / early departure / overtime against the given
  * shift window (see shiftSettingsFor — resolved per staff member from their
- * StaffGroup). Unpaired trailing IN punches (still clocked in, or a missed
- * OUT) are ignored for hours but don't crash the calculation.
+ * StaffGroup). Unpaired trailing punches (still clocked in, or a missed
+ * closing punch) are ignored for hours but don't crash the calculation.
+ *
+ * BREAK_IN/BREAK_OUT (and similarly OVERTIME_IN/OVERTIME_OUT) are paired by
+ * alternation — whichever of the pair appears first opens the interval, the
+ * next one of either type closes it — rather than assuming a fixed
+ * direction. Real ZKTeco terminals and legacy systems aren't fully
+ * consistent about which label means "starting" vs "ending" a break, so
+ * this only relies on them alternating within a day, which always holds.
  *
  * `punchType` is typed as a plain string (not @hr/shared's PunchType) because
  * callers pass Prisma query results — Prisma generates its own nominally
@@ -72,20 +90,39 @@ export function buildTimesheet(
     const sorted = [...dayEntries].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     let hoursWorked = 0;
+    let breakHours = 0;
+    let otPunchedHours = 0;
     let openIn: Date | null = null;
+    let openBreakStart: Date | null = null;
+    let openOtStart: Date | null = null;
     let firstIn: Date | null = null;
     let lastOut: Date | null = null;
 
     for (const punch of sorted) {
-      if (punch.punchType === PunchType.IN) {
+      if (punch.punchType === PunchType.CHECK_IN) {
         if (!firstIn) firstIn = punch.timestamp;
         openIn = punch.timestamp;
-      } else if (punch.punchType === PunchType.OUT && openIn) {
+      } else if (punch.punchType === PunchType.CHECK_OUT && openIn) {
         hoursWorked += (punch.timestamp.getTime() - openIn.getTime()) / 3600000;
         lastOut = punch.timestamp;
         openIn = null;
+      } else if (punch.punchType === PunchType.BREAK_IN || punch.punchType === PunchType.BREAK_OUT) {
+        if (!openBreakStart) {
+          openBreakStart = punch.timestamp;
+        } else {
+          breakHours += (punch.timestamp.getTime() - openBreakStart.getTime()) / 3600000;
+          openBreakStart = null;
+        }
+      } else if (punch.punchType === PunchType.OVERTIME_IN || punch.punchType === PunchType.OVERTIME_OUT) {
+        if (!openOtStart) {
+          openOtStart = punch.timestamp;
+        } else {
+          otPunchedHours += (punch.timestamp.getTime() - openOtStart.getTime()) / 3600000;
+          openOtStart = null;
+        }
       }
     }
+    hoursWorked = Math.max(0, hoursWorked - breakHours);
 
     const shiftStart = parseShiftTime(sorted[0].timestamp, shift.shiftStart);
     const shiftEnd = new Date(shiftStart.getTime() + shift.standardDailyHours * 3600000);
@@ -98,6 +135,8 @@ export function buildTimesheet(
       firstIn: firstIn ? firstIn.toISOString() : null,
       lastOut: lastOut ? lastOut.toISOString() : null,
       hoursWorked: Math.round(hoursWorked * 100) / 100,
+      breakHours: Math.round(breakHours * 100) / 100,
+      otPunchedHours: Math.round(otPunchedHours * 100) / 100,
       lateArrival: firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false,
       earlyDeparture: lastOut ? lastOut.getTime() < shiftEnd.getTime() - graceMs : false,
       overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),

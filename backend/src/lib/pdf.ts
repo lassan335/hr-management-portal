@@ -12,6 +12,8 @@ export function buildTablePdf(params: {
   columns: { header: string; width: number }[];
   rows: (string | number)[][];
   totalsRow?: (string | number)[];
+  /** "Checked by" / "Approved by" style sign-off blocks at the bottom. */
+  signoff?: { label: string; name?: string; designation?: string }[];
 }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 40, size: "A4" });
@@ -55,6 +57,22 @@ export function buildTablePdf(params: {
     if (params.totalsRow) {
       y += 4;
       drawRow(params.totalsRow, { bold: true });
+    }
+
+    if (params.signoff && params.signoff.length > 0) {
+      y += 30;
+      if (y > doc.page.height - 100) {
+        doc.addPage();
+        y = doc.y;
+      }
+      const blockWidth = params.columns.reduce((s, c) => s + c.width, 0) / params.signoff.length;
+      params.signoff.forEach((block, i) => {
+        const x = startX + i * blockWidth;
+        doc.font("Helvetica").fontSize(9);
+        doc.text("Sign: _______________________", x, y, { width: blockWidth - 10 });
+        doc.text(`Name: ${block.name ?? "_______________________"}`, x, y + 20, { width: blockWidth - 10 });
+        doc.text(`${block.label}${block.designation ? `: ${block.designation}` : ""}`, x, y + 36, { width: blockWidth - 10 });
+      });
     }
 
     doc.end();

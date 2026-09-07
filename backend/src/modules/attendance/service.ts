@@ -9,6 +9,7 @@ import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
 import { endOfUtcDay } from "../../lib/dateRange";
 import { buildTablePdf } from "../../lib/pdf";
+import { buildReportExcel } from "../../lib/reportExcel";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
 import { buildTimesheet, shiftSettingsFor } from "./timesheet";
 import type { correctionSchema } from "./validation";
@@ -122,7 +123,8 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
 
   const staffList = await prisma.staff.findMany({
     where: deptId ? { departmentId: deptId } : {},
-    select: { id: true, fullName: true, staffId: true, staffGroup: true },
+    select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true },
+    orderBy: { staffId: "asc" },
   });
 
   const rows = await Promise.all(
@@ -136,6 +138,8 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
         staffId: s.id,
         staffCode: s.staffId,
         fullName: s.fullName,
+        designation: s.designation,
+        daysPresent: days.filter((d) => d.hoursWorked > 0).length,
         totalHours: Math.round(days.reduce((sum, d) => sum + d.hoursWorked, 0) * 100) / 100,
         lateCount: days.filter((d) => d.lateArrival).length,
         earlyDepartureCount: days.filter((d) => d.earlyDeparture).length,
@@ -145,6 +149,63 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
   );
 
   return rows;
+}
+
+function attendancePeriodLabel(from: Date, to: Date): string {
+  const fmt = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  return `${fmt(from)} to ${fmt(to)}`;
+}
+
+/** School-wide attendance report — one row per staff for the date range,
+ * built on the same per-staff aggregation as the Department Dashboard. */
+export async function attendanceReportPdf(requester: AuthUser, departmentId: string | undefined, from: Date, to: Date): Promise<Buffer> {
+  const rows = await getDepartmentDashboard(requester, departmentId, from, to);
+  const totalHours = Math.round(rows.reduce((s, r) => s + r.totalHours, 0) * 100) / 100;
+  const totalOvertime = Math.round(rows.reduce((s, r) => s + r.overtimeHours, 0) * 100) / 100;
+  return buildTablePdf({
+    title: "Attendance Report",
+    subtitle: `Kinbidhoo School — ${attendancePeriodLabel(from, to)}`,
+    columns: [
+      { header: "#", width: 20 },
+      { header: "Staff ID", width: 55 },
+      { header: "Name", width: 100 },
+      { header: "Designation", width: 90 },
+      { header: "Days Present", width: 50 },
+      { header: "Total Hours", width: 50 },
+      { header: "Late", width: 35 },
+      { header: "Early Leave", width: 55 },
+      { header: "Overtime Hrs", width: 55 },
+    ],
+    rows: rows.map((r, i) => [i + 1, r.staffCode, r.fullName, r.designation, r.daysPresent, r.totalHours, r.lateCount, r.earlyDepartureCount, r.overtimeHours]),
+    totalsRow: ["", "", "", "Total", "", totalHours, "", "", totalOvertime],
+    signoff: [{ label: "Checked by" }, { label: "Approved by" }],
+  });
+}
+
+export async function attendanceReportExcel(requester: AuthUser, departmentId: string | undefined, from: Date, to: Date): Promise<Buffer> {
+  const rows = await getDepartmentDashboard(requester, departmentId, from, to);
+  return buildReportExcel({
+    title: "Attendance Report",
+    subtitle: `Kinbidhoo School — ${attendancePeriodLabel(from, to)}`,
+    sheetName: "Attendance Report",
+    columns: [
+      { header: "#", key: "n", width: 5 },
+      { header: "Staff ID", key: "staffCode", width: 12 },
+      { header: "Name", key: "fullName", width: 24 },
+      { header: "Designation", key: "designation", width: 24 },
+      { header: "Days Present", key: "daysPresent", width: 12 },
+      { header: "Total Hours", key: "totalHours", width: 12, money: true },
+      { header: "Late", key: "lateCount", width: 8 },
+      { header: "Early Leave", key: "earlyDepartureCount", width: 10 },
+      { header: "Overtime Hrs", key: "overtimeHours", width: 12, money: true },
+    ],
+    rows: rows.map((r, i) => ({ n: i + 1, ...r })),
+    totalsRow: {
+      fullName: "Total",
+      totalHours: Math.round(rows.reduce((s, r) => s + r.totalHours, 0) * 100) / 100,
+      overtimeHours: Math.round(rows.reduce((s, r) => s + r.overtimeHours, 0) * 100) / 100,
+    },
+  });
 }
 
 export async function importFile(actor: AuthUser, filePath: string, meta: AuditMeta = {}) {

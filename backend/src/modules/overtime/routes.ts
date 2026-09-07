@@ -4,7 +4,7 @@ import { authenticate } from "../../lib/auth";
 import { requireRole } from "../../lib/rbac";
 import { requestMeta } from "../../lib/audit";
 import * as service from "./service";
-import { overtimeRequestSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema } from "./validation";
+import { overtimeRequestSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema } from "./validation";
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void | Response>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -110,6 +110,24 @@ export function overtimeRouter(): Router {
     asyncHandler(async (req, res) => {
       const query = dashboardQuerySchema.parse(req.query);
       res.json(await service.ledger(req.user!, query.departmentId, query.month, query.year));
+    })
+  );
+
+  router.get(
+    "/report",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = reportQuerySchema.parse(req.query);
+      if (query.format === "pdf") {
+        const pdf = await service.overtimeReportPdf(req.user!, query.departmentId, query.month, query.year);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", 'attachment; filename="overtime-report.pdf"');
+        return res.send(pdf);
+      }
+      const xlsx = await service.overtimeReportExcel(req.user!, query.departmentId, query.month, query.year);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", 'attachment; filename="overtime-report.xlsx"');
+      res.send(xlsx);
     })
   );
 

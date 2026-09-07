@@ -164,7 +164,17 @@ function DepartmentDashboard({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium text-slate-700 mb-2">Department Dashboard</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-medium text-slate-700">Department Dashboard</h2>
+        <span className="space-x-3">
+          <a href={attendanceApi.reportUrl(from, to, undefined, "excel")} className="text-xs text-brand-600 hover:underline">
+            Attendance Report (Excel)
+          </a>
+          <a href={attendanceApi.reportUrl(from, to, undefined, "pdf")} className="text-xs text-brand-600 hover:underline">
+            PDF
+          </a>
+        </span>
+      </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="text-left text-slate-500">

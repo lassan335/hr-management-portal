@@ -92,4 +92,9 @@ export const overtimeApi = {
     const params = new URLSearchParams({ month: String(month), year: String(year), ...(departmentId ? { departmentId } : {}) });
     return api.get<LedgerRow[]>(`/api/overtime/ledger?${params.toString()}`);
   },
+  /** Monthly OT Sheet report — Excel by default (one row per staff), PDF option. */
+  reportUrl: (month: number, year: number, departmentId: string | undefined, format: "excel" | "pdf" = "excel") => {
+    const params = new URLSearchParams({ month: String(month), year: String(year), format, ...(departmentId ? { departmentId } : {}) });
+    return `${API_URL}/api/overtime/report?${params.toString()}`;
+  },
 };

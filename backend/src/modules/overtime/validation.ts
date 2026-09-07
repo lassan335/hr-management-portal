@@ -36,3 +36,7 @@ export const dashboardQuerySchema = z.object({
   month: z.coerce.number().int().min(1).max(12),
   year: z.coerce.number().int().min(2000),
 });
+
+export const reportQuerySchema = dashboardQuerySchema.extend({
+  format: z.enum(["pdf", "excel"]).optional().default("excel"),
+});

@@ -198,7 +198,17 @@ function DashboardCard({ month, year }: { month: number; year: number }) {
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium text-slate-700 mb-2">Department Dashboard</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-medium text-slate-700">Department Dashboard</h2>
+        <span className="space-x-3">
+          <a href={overtimeApi.reportUrl(month, year, undefined, "excel")} className="text-xs text-brand-600 hover:underline">
+            Overtime Report (Excel)
+          </a>
+          <a href={overtimeApi.reportUrl(month, year, undefined, "pdf")} className="text-xs text-brand-600 hover:underline">
+            PDF
+          </a>
+        </span>
+      </div>
       <table className="min-w-full text-sm">
         <thead className="text-left text-slate-500">
           <tr><th className="px-2 py-1">Staff</th><th className="px-2 py-1">Hours</th><th className="px-2 py-1">Cost</th></tr>

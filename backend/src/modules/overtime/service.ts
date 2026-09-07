@@ -5,6 +5,7 @@ import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
 import { buildTablePdf } from "../../lib/pdf";
+import { buildReportExcel } from "../../lib/reportExcel";
 import { payPeriodRange } from "../../lib/dateRange";
 import { env } from "../../lib/env";
 import type { overtimeRequestSchema, rateSchema } from "./validation";
@@ -358,6 +359,128 @@ export async function departmentDashboard(requester: AuthUser, departmentId: str
     })
   );
   return rows;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Monthly OT Sheet — per-staff Normal/Holiday hour and cost breakdown for
+ * the pay period, matching the legacy portal's school-wide overtime report.
+ *
+ * Deliberately NOT implemented here (see README's "Deferred / out of
+ * scope"): the "Deducted"/"Eligible" hour columns and the "Self Capped"/
+ * "All Capped" amount tiers — those depend on a capping rule (against basic
+ * salary and/or a school-wide OT budget) that isn't configured anywhere in
+ * this system, and guessing it would risk silently misreporting real pay
+ * figures. What's shown here (Normal/Holiday hours and cost, uncapped) is
+ * exactly what monthlySummary() already computes and pays out.
+ */
+export async function overtimeReport(requester: AuthUser, departmentId: string | undefined, month: number, year: number) {
+  let deptId = departmentId;
+  if (requester.role === Role.HOD) {
+    deptId = requester.departmentId ?? "__none__";
+  } else if (requester.role !== Role.HR_ADMIN) {
+    throw new HttpError(403, "forbidden");
+  }
+
+  const staffList = await prisma.staff.findMany({
+    where: deptId ? { departmentId: deptId } : {},
+    select: { id: true, fullName: true, staffId: true, designation: true },
+    orderBy: { staffId: "asc" },
+  });
+
+  const rows = await Promise.all(
+    staffList.map(async (s) => {
+      const summary = await monthlySummary(requester, s.id, month, year).catch(() => null);
+      let normalHours = 0;
+      let normalCost = 0;
+      let holidayHours = 0;
+      let holidayCost = 0;
+      for (const r of summary?.rows ?? []) {
+        if (r.isHoliday) {
+          holidayHours += r.hours;
+          holidayCost += r.cost ?? 0;
+        } else {
+          normalHours += r.hours;
+          normalCost += r.cost ?? 0;
+        }
+      }
+      return {
+        staffId: s.id,
+        staffCode: s.staffId,
+        fullName: s.fullName,
+        designation: s.designation,
+        normalHours: round2(normalHours),
+        holidayHours: round2(holidayHours),
+        normalCost: round2(normalCost),
+        holidayCost: round2(holidayCost),
+        totalCost: round2(normalCost + holidayCost),
+      };
+    })
+  );
+  return rows;
+}
+
+function otPeriodLabel(month: number, year: number): string {
+  const { from, to } = otPeriodRange(month, year);
+  const fmt = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  return `${fmt(from)} to ${fmt(to)}`;
+}
+
+export async function overtimeReportPdf(requester: AuthUser, departmentId: string | undefined, month: number, year: number): Promise<Buffer> {
+  const rows = await overtimeReport(requester, departmentId, month, year);
+  const totalNormal = round2(rows.reduce((s, r) => s + r.normalCost, 0));
+  const totalHoliday = round2(rows.reduce((s, r) => s + r.holidayCost, 0));
+  return buildTablePdf({
+    title: "Monthly OT Sheet",
+    subtitle: `Kinbidhoo School — ${otPeriodLabel(month, year)}`,
+    columns: [
+      { header: "#", width: 20 },
+      { header: "Staff ID", width: 55 },
+      { header: "Name", width: 90 },
+      { header: "Designation", width: 85 },
+      { header: "Normal Hrs", width: 45 },
+      { header: "Holiday Hrs", width: 45 },
+      { header: "Normal Cost", width: 55 },
+      { header: "Holiday Cost", width: 55 },
+      { header: "Total Cost", width: 60 },
+    ],
+    rows: rows.map((r, i) => [i + 1, r.staffCode, r.fullName, r.designation, r.normalHours, r.holidayHours, r.normalCost, r.holidayCost, r.totalCost]),
+    totalsRow: ["", "", "", "Total", "", "", totalNormal, totalHoliday, round2(totalNormal + totalHoliday)],
+    signoff: [
+      { label: "Checked by" },
+      { label: "Approved by" },
+    ],
+  });
+}
+
+export async function overtimeReportExcel(requester: AuthUser, departmentId: string | undefined, month: number, year: number): Promise<Buffer> {
+  const rows = await overtimeReport(requester, departmentId, month, year);
+  return buildReportExcel({
+    title: "Monthly OT Sheet",
+    subtitle: `Kinbidhoo School — ${otPeriodLabel(month, year)}`,
+    sheetName: "OT Sheet",
+    columns: [
+      { header: "#", key: "n", width: 5 },
+      { header: "Staff ID", key: "staffCode", width: 12 },
+      { header: "Name", key: "fullName", width: 24 },
+      { header: "Designation", key: "designation", width: 24 },
+      { header: "Normal Hrs", key: "normalHours", width: 12, money: true },
+      { header: "Holiday Hrs", key: "holidayHours", width: 12, money: true },
+      { header: "Normal Cost", key: "normalCost", width: 14, money: true },
+      { header: "Holiday Cost", key: "holidayCost", width: 14, money: true },
+      { header: "Total Cost", key: "totalCost", width: 14, money: true },
+    ],
+    rows: rows.map((r, i) => ({ n: i + 1, ...r })),
+    totalsRow: {
+      fullName: "Total",
+      normalCost: round2(rows.reduce((s, r) => s + r.normalCost, 0)),
+      holidayCost: round2(rows.reduce((s, r) => s + r.holidayCost, 0)),
+      totalCost: round2(rows.reduce((s, r) => s + r.totalCost, 0)),
+    },
+  });
 }
 
 /**

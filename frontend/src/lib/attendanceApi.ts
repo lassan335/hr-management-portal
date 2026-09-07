@@ -74,6 +74,11 @@ export const attendanceApi = {
     const params = new URLSearchParams({ from, to, ...(departmentId ? { departmentId } : {}) });
     return api.get<DashboardRow[]>(`/api/attendance/dashboard?${params.toString()}`);
   },
+  /** School-wide attendance report — Excel by default (one row per staff), PDF option. */
+  reportUrl: (from: string, to: string, departmentId: string | undefined, format: "excel" | "pdf" = "excel") => {
+    const params = new URLSearchParams({ from, to, format, ...(departmentId ? { departmentId } : {}) });
+    return `${API_URL}/api/attendance/report?${params.toString()}`;
+  },
   syncLogs: () => api.get<SyncLogEntry[]>("/api/attendance/sync-log"),
   unmatched: () => api.get<UnmatchedEntry[]>("/api/attendance/unmatched"),
   resolveUnmatched: (deviceUserId: string, staffId: string) =>

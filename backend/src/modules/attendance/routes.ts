@@ -11,6 +11,7 @@ import {
   clockSchema,
   timesheetQuerySchema,
   dashboardQuerySchema,
+  reportQuerySchema,
   resolveUnmatchedSchema,
   correctionSchema,
   reviewSchema,
@@ -93,6 +94,24 @@ export function attendanceRouter(): Router {
     asyncHandler(async (req, res) => {
       const query = dashboardQuerySchema.parse(req.query);
       res.json(await service.getDepartmentDashboard(req.user!, query.departmentId, query.from, query.to));
+    })
+  );
+
+  router.get(
+    "/report",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = reportQuerySchema.parse(req.query);
+      if (query.format === "pdf") {
+        const pdf = await service.attendanceReportPdf(req.user!, query.departmentId, query.from, query.to);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", 'attachment; filename="attendance-report.pdf"');
+        return res.send(pdf);
+      }
+      const xlsx = await service.attendanceReportExcel(req.user!, query.departmentId, query.from, query.to);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", 'attachment; filename="attendance-report.xlsx"');
+      res.send(xlsx);
     })
   );
 

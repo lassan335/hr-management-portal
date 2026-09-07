@@ -18,6 +18,10 @@ export const dashboardQuerySchema = z.object({
   to: z.coerce.date(),
 });
 
+export const reportQuerySchema = dashboardQuerySchema.extend({
+  format: z.enum(["pdf", "excel"]).optional().default("excel"),
+});
+
 export const resolveUnmatchedSchema = z.object({
   staffId: z.string().min(1),
 });

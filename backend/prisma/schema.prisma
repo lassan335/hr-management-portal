@@ -470,6 +470,17 @@ model TermCalendar {
   blocksLeave Boolean  @default(false)
 }
 
+/// One-off public holidays / non-working days that fall on a weekday —
+/// the recurring Friday/Saturday weekend is handled by day-of-week in
+/// timesheet.ts and doesn't need a row here. A date present in either
+/// place counts as a holiday for holidayAttendanceEligible/OT purposes.
+model Holiday {
+  id          String   @id @default(cuid())
+  date        DateTime @unique @db.Date
+  description String
+  createdAt   DateTime @default(now())
+}
+
 model Notification {
   id        String           @id @default(cuid())
   staffId   String

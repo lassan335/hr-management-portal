@@ -21,11 +21,10 @@ export interface DayTimesheet {
   lateMinutes: number;
   earlyDeparture: boolean;
   overtimeHours: number;
-  /** On a weekend/holiday, attendance counts once >= 3h is worked that day.
-   * NOTE: "holiday" here is approximated as Sat/Sun — there's no separate
-   * designated-holiday calendar yet (the legacy portal's "Holidays /
-   * Non-Working Days" list), so a holiday falling on a weekday isn't
-   * detected. Add a Holiday model to close that gap if it matters. */
+  /** True if this date is the Fri/Sat weekend or an explicit Holiday row
+   * (see the `holidays` module — Public Holidays / Non-Working Days). */
+  isHoliday: boolean;
+  /** On a weekend/holiday, attendance counts once >= 3h is worked that day. */
   holidayAttendanceEligible: boolean;
   /** Uniform 8h/day threshold before any worked time counts as
    * overtime-eligible — distinct from `overtimeHours` above, which is the
@@ -79,7 +78,11 @@ function parseShiftTime(dayDate: Date, hhmm: string): Date {
  * here avoids a needless cast at every call site. */
 export function buildTimesheet(
   entries: { timestamp: Date; punchType: string }[],
-  shift: ShiftSettings
+  shift: ShiftSettings,
+  /** "YYYY-MM-DD" dates from the Holiday table — one-off public holidays
+   * that fall on a weekday. The recurring Fri/Sat weekend below always
+   * counts as a holiday regardless of this set. */
+  holidayDates: Set<string> = new Set()
 ): DayTimesheet[] {
   const byDay = new Map<string, { timestamp: Date; punchType: string }[]>();
   for (const e of entries) {
@@ -130,8 +133,9 @@ export function buildTimesheet(
     const shiftStart = parseShiftTime(sorted[0].timestamp, shift.shiftStart);
     const shiftEnd = new Date(shiftStart.getTime() + shift.standardDailyHours * 3600000);
     const graceMs = env.gracePeriodMinutes * 60000;
+    // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday.
     const dayOfWeek = sorted[0].timestamp.getDay();
-    const isWeekendOrHoliday = dayOfWeek === 0 || dayOfWeek === 6;
+    const isHoliday = dayOfWeek === 5 || dayOfWeek === 6 || holidayDates.has(date);
     const lateArrival = firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false;
 
     days.push({
@@ -145,7 +149,8 @@ export function buildTimesheet(
       lateMinutes: lateArrival && firstIn ? Math.round((firstIn.getTime() - shiftStart.getTime()) / 60000) : 0,
       earlyDeparture: lastOut ? lastOut.getTime() < shiftEnd.getTime() - graceMs : false,
       overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),
-      holidayAttendanceEligible: isWeekendOrHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,
+      isHoliday,
+      holidayAttendanceEligible: isHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,
       overtimeEligible: hoursWorked >= env.overtimeEligibleThresholdHours,
     });
   }

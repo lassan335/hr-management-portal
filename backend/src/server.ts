@@ -14,6 +14,7 @@ import { attendanceRouter } from "./modules/attendance/routes";
 import { overtimeRouter } from "./modules/overtime/routes";
 import { leaveRouter } from "./modules/leave/routes";
 import { payrollRouter } from "./modules/payroll/routes";
+import { holidaysRouter } from "./modules/holidays/routes";
 import { startZktimeWatcher } from "./jobs/zktimeWatcher";
 
 // Fail fast on a misconfigured/missing ENCRYPTION_KEY at boot, not on the
@@ -59,6 +60,7 @@ app.use("/api/attendance", attendanceRouter());
 app.use("/api/overtime", overtimeRouter());
 app.use("/api/leave", leaveRouter());
 app.use("/api/payroll", payrollRouter());
+app.use("/api/holidays", holidaysRouter());
 
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 app.use(errorHandler);

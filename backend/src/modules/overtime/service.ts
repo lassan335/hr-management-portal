@@ -27,9 +27,10 @@ function rateValueFor(
   isHoliday: boolean
 ): number | null {
   if (!rate) return null;
+  // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday.
   const dayOfWeek = date.getDay();
   if (isHoliday) return Number(rate.holidayRate);
-  if (dayOfWeek === 0 || dayOfWeek === 6) return Number(rate.weekendRate);
+  if (dayOfWeek === 5 || dayOfWeek === 6) return Number(rate.weekendRate);
   return Number(rate.weekdayRate);
 }
 

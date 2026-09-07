@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Users, Clock, Timer, CalendarDays, Wallet, Bell, Sun, Moon, LogOut, Search, Menu, X } from "lucide-react";
+import { LayoutDashboard, Users, Clock, Timer, CalendarDays, Wallet, CalendarOff, Bell, Sun, Moon, LogOut, Search, Menu, X } from "lucide-react";
 import { Role } from "@hr/shared";
 import { useAuth } from "../lib/AuthContext";
 import { useTheme } from "../lib/ThemeContext";
@@ -13,6 +13,7 @@ const NAV_ITEMS: { to: string; label: string; icon: typeof LayoutDashboard; role
   { to: "/overtime", label: "Overtime", icon: Timer },
   { to: "/leave", label: "Leave", icon: CalendarDays },
   { to: "/payroll", label: "Payroll", icon: Wallet },
+  { to: "/holidays", label: "Holidays", icon: CalendarOff },
 ];
 
 function initials(name: string): string {

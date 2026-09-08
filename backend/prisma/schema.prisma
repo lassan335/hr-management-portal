@@ -28,6 +28,38 @@ enum Gender {
   OTHER
 }
 
+/// Which of the academic calendar's holiday groups a staff member follows —
+/// distinct from Role (access level) and StaffGroup (shift hours). Teachers
+/// get the school's term-break holidays (Holiday.scope TEACHING); admin/
+/// support staff work through those and only get scope ALL days off.
+enum StaffCategory {
+  TEACHING
+  NON_TEACHING
+}
+
+/// Which staff category a Holiday applies to. ALL = public holiday
+/// (everyone off); TEACHING = school term-break day (teachers only,
+/// admin/support staff still work); NON_TEACHING exists for symmetry but
+/// isn't expected to see real use (admin-only closures are unusual).
+enum HolidayScope {
+  ALL
+  TEACHING
+  NON_TEACHING
+}
+
+/// Pay/attendance treatment for a holiday — orthogonal to HolidayScope
+/// (who it applies to). GOVERNMENT: same OT rate as a normal day
+/// (otNormalRateMultiplier), OT-eligible only after the standard daily-hours
+/// threshold. PUBLIC: elevated OT rate (otHolidayRateMultiplier), OT-eligible
+/// from the first minute worked. Every Saturday is GOVERNMENT and every
+/// Friday is PUBLIC regardless of the Holiday table (see
+/// holidays/service.ts's resolveDayType) — declared calendar holidays
+/// default PUBLIC unless HR sets this explicitly.
+enum HolidayType {
+  GOVERNMENT
+  PUBLIC
+}
+
 enum EmploymentType {
   PERMANENT
   CONTRACT
@@ -159,6 +191,11 @@ model Staff {
   /// allowed to directly assign a pre-approved overtime task to another
   /// staff member — see OvertimeRequest.assignedById.
   canSupervise Boolean @default(false)
+
+  /// Which academic-calendar holiday group this staff member follows — see
+  /// StaffCategory. Defaults NON_TEACHING (admin/support); HR sets TEACHING
+  /// explicitly for teaching staff.
+  category StaffCategory @default(NON_TEACHING)
 
   status          StaffStatus @default(ACTIVE)
   /// Bumped on logout, status change, or role/department change to
@@ -507,10 +544,14 @@ model TermCalendar {
 /// timesheet.ts and doesn't need a row here. A date present in either
 /// place counts as a holiday for holidayAttendanceEligible/OT purposes.
 model Holiday {
-  id          String   @id @default(cuid())
-  date        DateTime @unique @db.Date
+  id          String       @id @default(cuid())
+  date        DateTime     @unique @db.Date
   description String
-  createdAt   DateTime @default(now())
+  /// Which staff category this day off applies to — see HolidayScope.
+  scope       HolidayScope @default(ALL)
+  /// Pay/attendance treatment — see HolidayType.
+  type        HolidayType  @default(PUBLIC)
+  createdAt   DateTime     @default(now())
 }
 
 model Notification {

@@ -10,7 +10,9 @@ export const overtimeRequestSchema = z.object({
   timeOut: timeString,
   reason: z.string().min(1),
   notes: z.string().optional(),
-  isHoliday: z.boolean().optional().default(false),
+  // No isHoliday field here — whether Government/Public Holiday rates apply
+  // is derived server-side from the real academic calendar (see
+  // overtime/service.ts's submitRequest/assignTask), not a client checkbox.
 });
 
 // A supervisor assigning a task directly to someone else — same shape as a

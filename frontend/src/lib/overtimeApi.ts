@@ -84,12 +84,12 @@ export interface LedgerRow {
 }
 
 export const overtimeApi = {
-  submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string; isHoliday?: boolean }) =>
+  submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string }) =>
     api.post<OvertimeRequestRow>("/api/overtime", input),
   /** Supervisor-only (Staff.canSupervise or HR/Admin) — creates a
    * pre-approved task directly for someone else, skipping the normal
    * submit/approve chain. */
-  assign: (input: { staffId: string; date: string; timeIn: string; timeOut: string; reason: string; notes?: string; isHoliday?: boolean }) =>
+  assign: (input: { staffId: string; date: string; timeIn: string; timeOut: string; reason: string; notes?: string }) =>
     api.post<OvertimeRequestRow>("/api/overtime/assign", input),
   list: () => api.get<OvertimeRequestRow[]>("/api/overtime"),
   review: (id: string, decision: "APPROVE" | "REJECT") => api.patch(`/api/overtime/${id}`, { decision }),

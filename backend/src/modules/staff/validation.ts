@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DocumentType, EmploymentType, Gender, Role, StaffStatus } from "@hr/shared";
+import { DocumentType, EmploymentType, Gender, Role, StaffStatus, StaffCategory } from "@hr/shared";
 import { STAFF_LOCKED_FIELDS, STAFF_SELF_EDITABLE_FIELDS } from "./fields";
 
 export const createStaffSchema = z.object({
@@ -24,10 +24,11 @@ export const createStaffSchema = z.object({
 });
 
 // HR/Admin direct update — every field is fair game, unlike the self-service
-// edit-request flow below. canSupervise is HR-only and never set at
-// creation, so it's added here rather than on createStaffSchema.
+// edit-request flow below. canSupervise/category are HR-only and never set
+// at creation, so they're added here rather than on createStaffSchema.
 export const adminUpdateStaffSchema = createStaffSchema.partial().extend({
   canSupervise: z.boolean().optional(),
+  category: z.nativeEnum(StaffCategory).optional(),
 });
 
 export const selfEditableFieldEnum = z.enum(STAFF_SELF_EDITABLE_FIELDS);

@@ -10,13 +10,63 @@ import { overtimeApi } from "../lib/overtimeApi";
 import type { OvertimeRequestRow } from "../lib/overtimeApi";
 import { leaveApi } from "../lib/leaveApi";
 import type { LeaveRequestRow } from "../lib/leaveApi";
-import { Card, StatCard, StatusBadge } from "../components/ui";
+import { holidaysApi } from "../lib/holidaysApi";
+import type { Holiday, HolidayScope } from "../lib/holidaysApi";
+import { Card, StatCard, StatusBadge, Badge } from "../components/ui";
 
 export function Dashboard() {
   const { user } = useAuth();
   if (!user) return null;
   if (user.role === Role.HR_ADMIN || user.role === Role.HOD) return <OverviewDashboard />;
   return <StaffDashboard />;
+}
+
+const SCOPE_BADGE: Record<HolidayScope, { label: string; tone: "red" | "green" | "amber" }> = {
+  ALL: { label: "Public Holiday", tone: "red" },
+  TEACHING: { label: "Teachers Only", tone: "green" },
+  NON_TEACHING: { label: "Admin Staff Only", tone: "amber" },
+};
+
+/** Next upcoming holidays from the academic calendar, filtered to ones that
+ * actually apply to the logged-in user (a Public Holiday, or one scoped to
+ * their own Teacher/Admin Staff category) — the same rule the timesheet
+ * uses, just surfaced here so it's visible without digging into a payslip. */
+function UpcomingHolidays() {
+  const [holidays, setHolidays] = useState<Holiday[]>([]);
+  const [category, setCategory] = useState<string | null>(null);
+
+  useEffect(() => {
+    staffApi.getMe().then((me) => setCategory(me.category)).catch(() => setCategory(null));
+    const today = new Date().toISOString().slice(0, 10);
+    holidaysApi.list(today).then(setHolidays).catch(() => setHolidays([]));
+  }, []);
+
+  const upcoming = holidays.filter((h) => h.scope === "ALL" || h.scope === category).slice(0, 8);
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-medium text-slate-700 dark:text-slate-200">Upcoming Holidays</h2>
+        <Link to="/holidays" className="text-xs text-brand-600 dark:text-brand-400 hover:underline">
+          View calendar
+        </Link>
+      </div>
+      <div className="space-y-2">
+        {upcoming.map((h) => (
+          <div key={h.id} className="flex items-center justify-between gap-2 text-sm">
+            <div className="min-w-0">
+              <p className="text-slate-700 dark:text-slate-200">{h.description}</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500">
+                {new Date(h.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+              </p>
+            </div>
+            <Badge tone={SCOPE_BADGE[h.scope].tone}>{SCOPE_BADGE[h.scope].label}</Badge>
+          </div>
+        ))}
+        {upcoming.length === 0 && <p className="text-sm text-slate-400 dark:text-slate-500">Nothing coming up.</p>}
+      </div>
+    </Card>
+  );
 }
 
 function OverviewDashboard() {
@@ -57,7 +107,7 @@ function OverviewDashboard() {
         <StatCard label="Pending Leave" value={loading ? "…" : leave.length} icon={<CalendarDays className="h-5 w-5" />} gradient="pink" hint="needs review" />
       </div>
 
-      <div className="grid md:grid-cols-3 gap-4">
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
         <RecentPanel title="Recent Staff">
           {staff.slice(0, 5).map((s) => (
             <RecentRow key={s.id} primary={s.fullName} secondary={s.designation} status={s.status} />
@@ -78,6 +128,8 @@ function OverviewDashboard() {
           ))}
           {leave.length === 0 && <EmptyRow />}
         </RecentPanel>
+
+        <UpcomingHolidays />
       </div>
 
       <Card>
@@ -158,7 +210,7 @@ function StaffDashboard() {
         <StatCard label="My Pending Leave" value={loading ? "…" : pendingLeave} icon={<CalendarDays className="h-5 w-5" />} gradient="pink" />
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-3 gap-4">
         <RecentPanel title="My Overtime Requests">
           {overtime.slice(0, 5).map((r) => (
             <RecentRow key={r.id} primary={r.date.slice(0, 10)} secondary={r.reason} status={r.status} />
@@ -172,6 +224,8 @@ function StaffDashboard() {
           ))}
           {leave.length === 0 && <EmptyRow />}
         </RecentPanel>
+
+        <UpcomingHolidays />
       </div>
     </div>
   );

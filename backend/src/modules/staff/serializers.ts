@@ -11,6 +11,7 @@ export function toStaffSummary(staff: Staff) {
     designation: staff.designation,
     status: staff.status,
     canSupervise: staff.canSupervise,
+    category: staff.category,
     photoDocumentId: staff.photoDocumentId,
   };
 }
@@ -43,6 +44,7 @@ export function toStaffDetail(staff: Staff) {
     deviceUserId: staff.deviceUserId,
     status: staff.status,
     canSupervise: staff.canSupervise,
+    category: staff.category,
     photoDocumentId: staff.photoDocumentId,
     createdAt: staff.createdAt,
     updatedAt: staff.updatedAt,

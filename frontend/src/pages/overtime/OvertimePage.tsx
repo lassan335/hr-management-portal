@@ -50,7 +50,6 @@ function SubmitAndList() {
     timeIn: "15:00",
     timeOut: "17:00",
     reason: "",
-    isHoliday: false,
   });
   const [error, setError] = useState<string | null>(null);
   const canReview = user?.role === Role.HOD || user?.role === Role.HR_ADMIN;
@@ -195,10 +194,6 @@ function SubmitAndList() {
           <label className="flex flex-col text-xs">Time Out
             <input type="time" value={form.timeOut} onChange={(e) => setForm({ ...form, timeOut: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
           </label>
-          <label className="flex items-center gap-1 text-xs">
-            <input type="checkbox" checked={form.isHoliday} onChange={(e) => setForm({ ...form, isHoliday: e.target.checked })} />
-            Holiday
-          </label>
           <input placeholder="Reason / task" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-sm flex-1" />
           <button className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md" onClick={submit}>
             Request Overtime
@@ -304,7 +299,6 @@ function AssignTaskForm({ onAssigned }: { onAssigned: () => void }) {
     timeIn: "18:00",
     timeOut: "22:30",
     reason: "",
-    isHoliday: false,
   });
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -356,10 +350,6 @@ function AssignTaskForm({ onAssigned }: { onAssigned: () => void }) {
         </label>
         <label className="flex flex-col text-xs">End Time
           <input type="time" value={form.timeOut} onChange={(e) => setForm({ ...form, timeOut: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
-        </label>
-        <label className="flex items-center gap-1 text-xs">
-          <input type="checkbox" checked={form.isHoliday} onChange={(e) => setForm({ ...form, isHoliday: e.target.checked })} />
-          Holiday
         </label>
         <input placeholder="Description" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-sm flex-1" />
         <button className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md" onClick={assign}>

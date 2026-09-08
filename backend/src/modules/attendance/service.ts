@@ -11,7 +11,7 @@ import { endOfUtcDay } from "../../lib/dateRange";
 import { buildTablePdf } from "../../lib/pdf";
 import { buildReportExcel } from "../../lib/reportExcel";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
-import { holidayDateSet } from "../holidays/service";
+import { holidayTypeMap, listHolidays, holidayTypeMapForCategory } from "../holidays/service";
 import { buildTimesheet, shiftSettingsFor } from "./timesheet";
 import { reconcileOvertimeCompletion } from "../overtime/service";
 import type { correctionSchema } from "./validation";
@@ -46,13 +46,13 @@ async function resolveTargetStaffId(requester: AuthUser, requestedStaffId?: stri
 
 export async function getTimesheet(requester: AuthUser, requestedStaffId: string | undefined, from: Date, to: Date) {
   const staffId = await resolveTargetStaffId(requester, requestedStaffId);
-  const [staff, entries, holidays] = await Promise.all([
-    prisma.staff.findUnique({ where: { id: staffId }, include: { staffGroup: true } }),
+  const staff = await prisma.staff.findUnique({ where: { id: staffId }, include: { staffGroup: true } });
+  const [entries, holidays] = await Promise.all([
     prisma.timeEntry.findMany({
       where: { staffId, timestamp: { gte: from, lte: endOfUtcDay(to) } },
       orderBy: { timestamp: "asc" },
     }),
-    holidayDateSet(from, to),
+    holidayTypeMap(from, to, staff?.category ?? "NON_TEACHING"),
   ]);
   return buildTimesheet(entries, shiftSettingsFor(staff?.staffGroup ?? null), holidays);
 }
@@ -129,13 +129,13 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
     throw new HttpError(403, "forbidden");
   }
 
-  const [staffList, holidays] = await Promise.all([
+  const [staffList, holidayRows] = await Promise.all([
     prisma.staff.findMany({
       where: deptId ? { departmentId: deptId } : {},
-      select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true },
+      select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true, category: true },
       orderBy: { staffId: "asc" },
     }),
-    holidayDateSet(from, to),
+    listHolidays(from, to),
   ]);
 
   const rows = await Promise.all(
@@ -144,6 +144,7 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
         where: { staffId: s.id, timestamp: { gte: from, lte: endOfUtcDay(to) } },
         orderBy: { timestamp: "asc" },
       });
+      const holidays = holidayTypeMapForCategory(holidayRows, s.category);
       const days = buildTimesheet(entries, shiftSettingsFor(s.staffGroup), holidays);
       return {
         staffId: s.id,

@@ -1,5 +1,6 @@
 import { PunchType } from "@hr/shared";
 import { env } from "../../lib/env";
+import { resolveDayType } from "../holidays/service";
 
 export interface DayTimesheet {
   date: string;
@@ -39,13 +40,21 @@ export interface DayTimesheet {
   /** True if this date is the Fri/Sat weekend or an explicit Holiday row
    * (see the `holidays` module — Public Holidays / Non-Working Days). */
   isHoliday: boolean;
+  /** GOVERNMENT (Saturday, or a declared holiday explicitly typed that way)
+   * or PUBLIC (Friday, or a declared holiday — the default) — null on an
+   * ordinary working day. Public gets the elevated OT rate and is
+   * OT-eligible from the first minute worked; Government uses the same
+   * rate/threshold as a normal day. See holidays/service.ts's
+   * resolveDayType. */
+  holidayType: "GOVERNMENT" | "PUBLIC" | null;
   /** On a weekend/holiday, attendance counts once >= 3h is worked that day. */
   holidayAttendanceEligible: boolean;
   /** Uniform 8h/day threshold before any worked time counts as
    * overtime-eligible — distinct from `overtimeHours` above, which is the
    * surplus over this staff member's own group's standard daily hours (may
    * be 6h for some groups). A staff member on a 6h-standard group could
-   * show overtimeHours > 0 while still not being "eligible" until 8h. */
+   * show overtimeHours > 0 while still not being "eligible" until 8h. On a
+   * PUBLIC holiday this threshold doesn't apply at all — any work counts. */
   overtimeEligible: boolean;
 }
 
@@ -100,10 +109,11 @@ function parseShiftTime(dayDate: Date, hhmm: string): Date {
 export function buildTimesheet(
   entries: { timestamp: Date; punchType: string }[],
   shift: ShiftSettings,
-  /** "YYYY-MM-DD" dates from the Holiday table — one-off public holidays
-   * that fall on a weekday. The recurring Fri/Sat weekend below always
-   * counts as a holiday regardless of this set. */
-  holidayDates: Set<string> = new Set()
+  /** "YYYY-MM-DD" -> HolidayType for declared Holiday rows that apply to
+   * this staff member's category (see holidays/service.ts's
+   * holidayTypeMapForCategory). The recurring Fri/Sat weekend is resolved
+   * separately by resolveDayType and always applies regardless of this map. */
+  holidayTypes: Map<string, string> = new Map()
 ): DayTimesheet[] {
   const byDay = new Map<string, { timestamp: Date; punchType: string }[]>();
   for (const e of entries) {
@@ -155,9 +165,11 @@ export function buildTimesheet(
 
     const shiftStart = parseShiftTime(sorted[0].timestamp, shift.shiftStart);
     const graceMs = env.gracePeriodMinutes * 60000;
-    // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday.
-    const dayOfWeek = sorted[0].timestamp.getDay();
-    const isHoliday = dayOfWeek === 5 || dayOfWeek === 6 || holidayDates.has(date);
+    // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday —
+    // Friday resolves PUBLIC, Saturday GOVERNMENT, regardless of the
+    // declared-holiday map (see resolveDayType).
+    const holidayType = resolveDayType(sorted[0].timestamp, holidayTypes);
+    const isHoliday = holidayType !== null;
     const lateArrival = firstIn ? firstIn.getTime() > shiftStart.getTime() + graceMs : false;
 
     days.push({
@@ -174,8 +186,12 @@ export function buildTimesheet(
       earlyDeparture,
       overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),
       isHoliday,
+      holidayType,
       holidayAttendanceEligible: isHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,
-      overtimeEligible: hoursWorked >= env.overtimeEligibleThresholdHours,
+      // Public Holiday: any work at all counts (even 1 minute) — no
+      // threshold. Government Holiday and ordinary working days: the usual
+      // uniform threshold applies.
+      overtimeEligible: holidayType === "PUBLIC" ? hoursWorked > 0 : hoursWorked >= env.overtimeEligibleThresholdHours,
     });
   }
 

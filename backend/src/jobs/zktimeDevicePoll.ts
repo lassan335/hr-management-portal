@@ -9,12 +9,21 @@ import { importDevicePunchesBatched, ParsedPunch } from "./zktimeImport";
 /**
  * The device's TCP protocol has no punch-direction field (unlike a ZKTime
  * 5.0 CSV/xlsx export, which usually has a status column) and no "since last
- * sync" cursor — every poll re-reads the device's full in-memory log. So
- * direction is inferred the same way the file importer falls back to when an
- * export has no status column (strict Check In/Check Out alternation per
- * device per day, ordered by time), and importDevicePunchesBatched skips
- * punches already recorded from an earlier poll instead of re-inserting them
- * every time.
+ * sync" cursor — every poll re-reads the device's full in-memory log, and
+ * importDevicePunchesBatched skips punches already recorded from an earlier
+ * poll instead of re-inserting them every time.
+ *
+ * Direction/type is inferred from position within each device+day's
+ * chronological sequence, the same way the real ZKTime 5.0 software's own
+ * "Schedule Class" mechanism works (confirmed by reading its shipped SQL
+ * schema — its raw punch table is *also* just a 2-state In/Out flag; Break
+ * detection there is a calculated gap between sessions, not a device-
+ * reported type either): the first punch of the day opens it (CHECK_IN),
+ * the last one closes it (CHECK_OUT), and any punches in between are the
+ * boundaries of a break (BREAK_OUT/BREAK_IN, alternating). A day with only
+ * 2 punches behaves exactly as before (CHECK_IN, CHECK_OUT); a day with an
+ * odd punch count ends on a BREAK_IN with no closing CHECK_OUT, correctly
+ * surfacing as missingCheckout rather than being guessed at.
  */
 function toAlternatingPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
   const sorted = logs
@@ -23,17 +32,31 @@ function toAlternatingPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
     .filter((log) => log.deviceUserId && !isNaN(log.recordTime?.getTime?.()))
     .sort((a, b) => a.recordTime.getTime() - b.recordTime.getTime());
 
-  const dayIndexByDeviceDay = new Map<string, number>();
-  return sorted.map((log) => {
+  const dayGroups = new Map<string, ZKAttendanceRecord[]>();
+  for (const log of sorted) {
     const dayKey = `${log.deviceUserId}:${log.recordTime.toISOString().slice(0, 10)}`;
-    const idxInDay = dayIndexByDeviceDay.get(dayKey) ?? 0;
-    dayIndexByDeviceDay.set(dayKey, idxInDay + 1);
-    return {
-      deviceUserId: log.deviceUserId,
-      timestamp: log.recordTime,
-      punchType: idxInDay % 2 === 0 ? PunchType.CHECK_IN : PunchType.CHECK_OUT,
-    };
-  });
+    if (!dayGroups.has(dayKey)) dayGroups.set(dayKey, []);
+    dayGroups.get(dayKey)!.push(log);
+  }
+
+  const punches: ParsedPunch[] = [];
+  for (const group of dayGroups.values()) {
+    group.forEach((log, i) => {
+      const isLast = i === group.length - 1;
+      let punchType: PunchType;
+      if (i === 0) {
+        punchType = PunchType.CHECK_IN;
+      } else if (i % 2 === 1) {
+        // An "out" position — closes the day if nothing follows, otherwise opens a break.
+        punchType = isLast ? PunchType.CHECK_OUT : PunchType.BREAK_OUT;
+      } else {
+        // An "in" position after the first punch is always a return from break.
+        punchType = PunchType.BREAK_IN;
+      }
+      punches.push({ deviceUserId: log.deviceUserId, timestamp: log.recordTime, punchType });
+    });
+  }
+  return punches;
 }
 
 let polling = false;

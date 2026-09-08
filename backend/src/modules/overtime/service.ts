@@ -1,4 +1,4 @@
-import { AuthUser, NotificationType, PunchType, Role } from "@hr/shared";
+import { AuthUser, NotificationType, Role } from "@hr/shared";
 import { prisma } from "../../lib/prisma";
 import { decryptField } from "../../lib/encryption";
 import { recordAudit } from "../../lib/audit";
@@ -9,6 +9,7 @@ import { buildTablePdf } from "../../lib/pdf";
 import { buildReportExcel } from "../../lib/reportExcel";
 import { payPeriodRange } from "../../lib/dateRange";
 import { shiftSettingsFor } from "../attendance/timesheet";
+import { isPublicHolidayDate } from "../holidays/service";
 import { env } from "../../lib/env";
 import type { overtimeRequestSchema, assignOvertimeSchema, rateSchema } from "./validation";
 import type { z } from "zod";
@@ -148,6 +149,13 @@ export async function submitRequest(
 ) {
   const { timeIn, timeOut } = resolveOtSlot(input);
 
+  // Derived from the real calendar, not the client's checkbox — the OT rate
+  // (elevated for a Public Holiday, same as normal for Government/weekday)
+  // depends on this being right, so it isn't left to manual entry. See
+  // holidays/service.ts's resolveDayType for what "Public" means here.
+  const actorStaff = await prisma.staff.findUnique({ where: { id: actor.staffId }, select: { category: true } });
+  const isHoliday = await isPublicHolidayDate(input.date, actorStaff?.category ?? "NON_TEACHING");
+
   const request = await prisma.overtimeRequest.create({
     data: {
       staffId: actor.staffId,
@@ -156,7 +164,7 @@ export async function submitRequest(
       timeOut,
       reason: input.reason,
       notes: input.notes,
-      isHoliday: input.isHoliday,
+      isHoliday,
     },
   });
   await recordAudit({
@@ -190,10 +198,13 @@ export async function assignTask(
     if (!actorStaff?.canSupervise) throw new HttpError(403, "forbidden");
   }
 
-  const target = await prisma.staff.findUnique({ where: { id: input.staffId }, select: { id: true } });
+  const target = await prisma.staff.findUnique({ where: { id: input.staffId }, select: { id: true, category: true } });
   if (!target) throw new HttpError(404, "staff_not_found");
 
   const { timeIn, timeOut } = resolveOtSlot(input);
+  // See submitRequest's comment — derived from the real calendar, not a
+  // client-supplied flag, using the target staff member's own category.
+  const isHoliday = await isPublicHolidayDate(input.date, target.category);
 
   const request = await prisma.overtimeRequest.create({
     data: {
@@ -203,7 +214,7 @@ export async function assignTask(
       timeOut,
       reason: input.reason,
       notes: input.notes,
-      isHoliday: input.isHoliday,
+      isHoliday,
       status: "APPROVED",
       assignedById: actor.staffId,
     },
@@ -349,45 +360,60 @@ export async function cancelRequest(actor: AuthUser, requestId: string, meta: Au
   return updated;
 }
 
-/** True if the staff member has at least one complete OVERTIME_IN/
- * OVERTIME_OUT punch pair that actually falls within the approved slot's
- * [timeIn, timeOut] window, per the ZKTime 5.0 biometric time clock — the
- * real-world confirmation that the pre-approved OT slot itself was worked,
- * not just that *some* overtime punches exist that day. A punch pair
- * outside the approved window (a different, unapproved stretch of time)
- * must never auto-complete a request — that would let clocking overtime at
- * any time get credited against whatever approved slot happens to share the
- * calendar date. Paired the same way buildTimesheet pairs BREAK_IN/
- * BREAK_OUT: whichever punch comes first opens the pair, the next one of
- * either type closes it; a pair only counts if the whole open-to-close span
- * sits inside the window. Only presence of a pair matters here — the *paid*
- * hours still come from the originally approved request window, not the
- * punch duration (see completeWork's doc comment for why). */
-async function hasOtPunchPair(staffId: string, timeIn: Date, timeOut: Date): Promise<boolean> {
-  const dayStart = new Date(timeIn);
-  dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
+/** True if there are at least two real time-clock punches — of ANY type —
+ * with timestamps both inside the approved slot's [timeIn, timeOut] window.
+ * That's the real-world confirmation that the pre-approved OT slot was
+ * actually worked.
+ *
+ * This deliberately does NOT filter by punchType. There's one physical
+ * biometric device and it has no "this is an OT punch" button — confirmed
+ * by reading its raw wire protocol directly, it reports nothing but a
+ * timestamp and user ID. Our own sync job infers CHECK_IN/CHECK_OUT/
+ * BREAK_IN/BREAK_OUT purely from position within that calendar day's whole
+ * punch sequence (see zktimeDevicePoll.ts), so an evening OT session's
+ * punches can land with any of those labels depending on how many other
+ * sessions happened earlier that day — they will never come back labeled
+ * OVERTIME_IN/OVERTIME_OUT. Filtering on that type here would mean no real
+ * device punch could ever auto-complete an approved request, only a manual
+ * HR override or a hand-typed correction ever could.
+ *
+ * A punch pair outside the approved window (a different, unapproved
+ * stretch of time) must never auto-complete a request — that would let
+ * clocking in at any time get credited against whatever approved slot
+ * happens to share the calendar date. Only presence of 2+ punches matters
+ * here — the *paid* hours still come from the originally approved request
+ * window, not the punch duration (see completeWork's doc comment for why). */
+/** Confirms an approved OT slot against real punches — 2+ within the
+ * window — and relabels the first/last of them OVERTIME_IN/OVERTIME_OUT so
+ * the timesheet's OT columns show it, not just an invisible backend match.
+ *
+ * The relabel is skipped for a punch that's also serving as the day's
+ * actual CHECK_IN/CHECK_OUT (common when an approved OT slot is someone's
+ * only activity that day — most OT is a standalone weekend/holiday
+ * session). buildTimesheet finds firstIn/lastOut by scanning specifically
+ * for those two types, so relabeling one away would zero out that day's
+ * hoursWorked. The slot is still confirmed either way (payroll only cares
+ * about workCompleted) — relabeling only happens when it's free, i.e. an OT
+ * session sandwiched onto a regular work day, where the matched punches are
+ * currently BREAK_IN/BREAK_OUT (safe to retype either direction). */
+async function confirmAndLabelOtPunches(staffId: string, timeIn: Date, timeOut: Date): Promise<boolean> {
   const punches = await prisma.timeEntry.findMany({
-    where: {
-      staffId,
-      timestamp: { gte: dayStart, lt: dayEnd },
-      punchType: { in: [PunchType.OVERTIME_IN, PunchType.OVERTIME_OUT] },
-    },
+    where: { staffId, timestamp: { gte: timeIn, lte: timeOut } },
     orderBy: { timestamp: "asc" },
+    select: { id: true, punchType: true },
   });
+  if (punches.length < 2) return false;
 
-  let openAt: Date | null = null;
-  for (const p of punches) {
-    if (!openAt) {
-      openAt = p.timestamp;
-    } else {
-      if (openAt.getTime() >= timeIn.getTime() && p.timestamp.getTime() <= timeOut.getTime()) {
-        return true;
-      }
-      openAt = null;
-    }
+  const isBoundaryType = (t: string) => t === "CHECK_IN" || t === "CHECK_OUT";
+  const first = punches[0];
+  const last = punches[punches.length - 1];
+  if (!isBoundaryType(first.punchType)) {
+    await prisma.timeEntry.update({ where: { id: first.id }, data: { punchType: "OVERTIME_IN" } });
   }
-  return false;
+  if (!isBoundaryType(last.punchType)) {
+    await prisma.timeEntry.update({ where: { id: last.id }, data: { punchType: "OVERTIME_OUT" } });
+  }
+  return true;
 }
 
 async function markWorkCompleted(
@@ -437,7 +463,7 @@ export async function reconcileOvertimeCompletion(staffId: string, date: Date): 
 
   let completedAny = false;
   for (const request of sameDay) {
-    if (await hasOtPunchPair(staffId, request.timeIn, request.timeOut)) {
+    if (await confirmAndLabelOtPunches(staffId, request.timeIn, request.timeOut)) {
       await markWorkCompleted(request.id, staffId, request.date, "DEVICE", null, staffId);
       completedAny = true;
     }
@@ -471,7 +497,7 @@ export async function completeWork(
   if (request.status !== "APPROVED") throw new HttpError(409, "not_approved");
   if (request.workCompleted) throw new HttpError(409, "already_completed");
 
-  const deviceConfirmed = await hasOtPunchPair(request.staffId, request.timeIn, request.timeOut);
+  const deviceConfirmed = await confirmAndLabelOtPunches(request.staffId, request.timeIn, request.timeOut);
   if (!deviceConfirmed && !options.manual) {
     throw new HttpError(409, "no_device_confirmation");
   }

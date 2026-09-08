@@ -90,6 +90,7 @@ export function StaffDetailView({ targetId }: { targetId: string }) {
           currentRole={staff.role}
           currentDepartmentId={staff.departmentId}
           currentCanSupervise={staff.canSupervise}
+          currentCategory={staff.category}
           isSelf={isSelf}
           onChanged={(msg) => {
             setMessage(msg);
@@ -217,6 +218,7 @@ function RoleAccessSection({
   currentRole,
   currentDepartmentId,
   currentCanSupervise,
+  currentCategory,
   isSelf,
   onChanged,
 }: {
@@ -224,6 +226,7 @@ function RoleAccessSection({
   currentRole: string;
   currentDepartmentId: string;
   currentCanSupervise: boolean;
+  currentCategory: string;
   isSelf: boolean;
   onChanged: (msg: string) => void;
 }) {
@@ -231,6 +234,7 @@ function RoleAccessSection({
   const [role, setRole] = useState(currentRole);
   const [departmentId, setDepartmentId] = useState(currentDepartmentId);
   const [canSupervise, setCanSupervise] = useState(currentCanSupervise);
+  const [category, setCategory] = useState(currentCategory);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -238,13 +242,17 @@ function RoleAccessSection({
     staffApi.departments().then(setDepartments).catch(() => setDepartments([]));
   }, []);
 
-  const dirty = role !== currentRole || departmentId !== currentDepartmentId || canSupervise !== currentCanSupervise;
+  const dirty =
+    role !== currentRole ||
+    departmentId !== currentDepartmentId ||
+    canSupervise !== currentCanSupervise ||
+    category !== currentCategory;
 
   async function save() {
     setSaving(true);
     setError(null);
     try {
-      await staffApi.adminUpdate(targetId, { role, departmentId, canSupervise });
+      await staffApi.adminUpdate(targetId, { role, departmentId, canSupervise, category });
       onChanged("Access updated. If this changes what they can see, their next request will require signing in again.");
     } catch (e) {
       setError((e as Error).message || "Failed to update access.");
@@ -294,6 +302,17 @@ function RoleAccessSection({
                   {d.name}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs">
+            Holiday group
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+            >
+              <option value="TEACHING">Teacher</option>
+              <option value="NON_TEACHING">Admin Staff</option>
             </select>
           </label>
           <label className="flex items-center gap-1.5 text-xs pb-1.5">

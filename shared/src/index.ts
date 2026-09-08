@@ -27,6 +27,31 @@ export enum StaffStatus {
   TERMINATED = "TERMINATED",
 }
 
+// Which academic-calendar holiday group a staff member follows — distinct
+// from Role (access level) and StaffGroup (shift hours).
+export enum StaffCategory {
+  TEACHING = "TEACHING",
+  NON_TEACHING = "NON_TEACHING",
+}
+
+// Which staff category a Holiday applies to. ALL = everyone off (a real
+// public holiday); TEACHING = a school term-break day (teachers only).
+export enum HolidayScope {
+  ALL = "ALL",
+  TEACHING = "TEACHING",
+  NON_TEACHING = "NON_TEACHING",
+}
+
+// Pay/attendance treatment for a holiday, orthogonal to HolidayScope (who
+// it applies to). GOVERNMENT: same OT rate as a normal day, OT-eligible
+// only past the standard daily-hours threshold. PUBLIC: elevated OT rate,
+// OT-eligible from the first minute worked. Every Saturday is GOVERNMENT
+// and every Friday is PUBLIC regardless of the Holiday table.
+export enum HolidayType {
+  GOVERNMENT = "GOVERNMENT",
+  PUBLIC = "PUBLIC",
+}
+
 // Shared staff -> HOD -> HR/Admin approval chain, used by overtime, leave,
 // and staff edit requests.
 export enum ApprovalStatus {

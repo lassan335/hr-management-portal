@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { DocumentType, Role } from "@hr/shared";
 import { authenticate } from "../../lib/auth";
-import { requireRole } from "../../lib/rbac";
+import { requireRole, requireRoleOrSupervisor } from "../../lib/rbac";
 import { upload } from "../../lib/upload";
 import { prisma } from "../../lib/prisma";
 import { recordAudit, requestMeta } from "../../lib/audit";
@@ -36,7 +36,7 @@ export function staffRouter(): Router {
 
   router.get(
     "/",
-    requireRole(Role.HR_ADMIN, Role.HOD),
+    requireRoleOrSupervisor(Role.HR_ADMIN, Role.HOD),
     asyncHandler(async (req, res) => {
       const query = staffListQuerySchema.parse(req.query);
       if (query.format === "csv") {

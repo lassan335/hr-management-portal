@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { Role } from "@hr/shared";
+import { prisma } from "./prisma";
 
 /** Must run after `authenticate` — 401s (not 403s) belong to auth, not here. */
 export function requireRole(...roles: Role[]) {
@@ -9,6 +10,20 @@ export function requireRole(...roles: Role[]) {
       return res.status(403).json({ error: "forbidden" });
     }
     next();
+  };
+}
+
+/** Same as requireRole, but also lets through a Staff.canSupervise=true
+ * requester regardless of `role` — most real staff (including the actual
+ * principal/administrators here) carry plain role STAFF, so supervisor
+ * status is a separate, explicit HR-set flag rather than derived from role. */
+export function requireRoleOrSupervisor(...roles: Role[]) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "unauthenticated" });
+    if (roles.includes(req.user.role)) return next();
+    const staff = await prisma.staff.findUnique({ where: { id: req.user.staffId }, select: { canSupervise: true } });
+    if (staff?.canSupervise) return next();
+    return res.status(403).json({ error: "forbidden" });
   };
 }
 

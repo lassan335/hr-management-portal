@@ -10,7 +10,7 @@ import { buildReportExcel } from "../../lib/reportExcel";
 import { payPeriodRange } from "../../lib/dateRange";
 import { shiftSettingsFor } from "../attendance/timesheet";
 import { env } from "../../lib/env";
-import type { overtimeRequestSchema, rateSchema } from "./validation";
+import type { overtimeRequestSchema, assignOvertimeSchema, rateSchema } from "./validation";
 import type { z } from "zod";
 
 type AuditMeta = { ipAddress?: string; userAgent?: string };
@@ -121,11 +121,9 @@ function hoursBetween(timeIn: Date, timeOut: Date): number {
   return Math.round((ms / 3600000) * 100) / 100;
 }
 
-export async function submitRequest(
-  actor: AuthUser,
-  input: z.infer<typeof overtimeRequestSchema>,
-  meta: AuditMeta = {}
-) {
+/** Shared duration/submission-window validation for both a self-submitted
+ * request and a supervisor-assigned task — same slot rules either way. */
+function resolveOtSlot(input: { date: Date; timeIn: string; timeOut: string }): { timeIn: Date; timeOut: Date } {
   const timeIn = combineDateAndTime(input.date, input.timeIn);
   let timeOut = combineDateAndTime(input.date, input.timeOut);
   if (timeOut <= timeIn) timeOut = new Date(timeOut.getTime() + 24 * 3600000); // crosses midnight
@@ -139,6 +137,16 @@ export async function submitRequest(
   if (daysSinceDate > env.otSubmissionWindowDays) {
     throw new HttpError(400, `submission_window_expired:${env.otSubmissionWindowDays}days`);
   }
+
+  return { timeIn, timeOut };
+}
+
+export async function submitRequest(
+  actor: AuthUser,
+  input: z.infer<typeof overtimeRequestSchema>,
+  meta: AuditMeta = {}
+) {
+  const { timeIn, timeOut } = resolveOtSlot(input);
 
   const request = await prisma.overtimeRequest.create({
     data: {
@@ -167,6 +175,55 @@ export async function submitRequest(
   return request;
 }
 
+/** A supervisor (Staff.canSupervise, or HR/Admin) creates a task directly
+ * for another staff member — already pre-approved, skipping the normal
+ * staff-submits/HOD-then-HR-approves chain entirely. The target staff
+ * member sees it under "Tasks Assigned To Me" and marks it complete the
+ * same way as any other approved slot. */
+export async function assignTask(
+  actor: AuthUser,
+  input: z.infer<typeof assignOvertimeSchema>,
+  meta: AuditMeta = {}
+) {
+  if (actor.role !== Role.HR_ADMIN) {
+    const actorStaff = await prisma.staff.findUnique({ where: { id: actor.staffId }, select: { canSupervise: true } });
+    if (!actorStaff?.canSupervise) throw new HttpError(403, "forbidden");
+  }
+
+  const target = await prisma.staff.findUnique({ where: { id: input.staffId }, select: { id: true } });
+  if (!target) throw new HttpError(404, "staff_not_found");
+
+  const { timeIn, timeOut } = resolveOtSlot(input);
+
+  const request = await prisma.overtimeRequest.create({
+    data: {
+      staffId: input.staffId,
+      date: input.date,
+      timeIn,
+      timeOut,
+      reason: input.reason,
+      notes: input.notes,
+      isHoliday: input.isHoliday,
+      status: "APPROVED",
+      assignedById: actor.staffId,
+    },
+  });
+  await recordAudit({
+    actorId: actor.staffId,
+    action: "OVERTIME_ASSIGNED",
+    entity: "OvertimeRequest",
+    entityId: request.id,
+    after: { staffId: input.staffId, date: input.date, timeIn: input.timeIn, timeOut: input.timeOut },
+    ...meta,
+  });
+  await notify({
+    staffId: input.staffId,
+    type: NotificationType.OVERTIME_TASK_ASSIGNED,
+    message: `Overtime task assigned for ${input.date.toISOString().slice(0, 10)}, ${input.timeIn}–${input.timeOut}: ${input.reason}`,
+  });
+  return request;
+}
+
 export async function listRequests(requester: AuthUser) {
   let requests;
   if (requester.role === Role.HR_ADMIN) {
@@ -179,19 +236,23 @@ export async function listRequests(requester: AuthUser) {
         OR: [{ status: { in: ["PENDING_HOD", "PENDING_HR"] } }, { status: "APPROVED", workCompleted: false }],
       },
       orderBy: { createdAt: "asc" },
-      include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
+      include: { staff: { select: { fullName: true, staffId: true, departmentId: true } }, assignedBy: { select: { fullName: true } } },
     });
   } else if (requester.role === Role.HOD) {
     requests = await prisma.overtimeRequest.findMany({
       where: { status: "PENDING_HOD", cancelled: false, staff: { departmentId: requester.departmentId ?? "__none__" } },
       orderBy: { createdAt: "asc" },
-      include: { staff: { select: { fullName: true, staffId: true, departmentId: true } } },
+      include: { staff: { select: { fullName: true, staffId: true, departmentId: true } }, assignedBy: { select: { fullName: true } } },
     });
   } else {
     requests = await prisma.overtimeRequest.findMany({
       where: { staffId: requester.staffId },
       orderBy: { createdAt: "desc" },
-      include: { hodReviewer: { select: { fullName: true } }, hrReviewer: { select: { fullName: true } } },
+      include: {
+        hodReviewer: { select: { fullName: true } },
+        hrReviewer: { select: { fullName: true } },
+        assignedBy: { select: { fullName: true } },
+      },
     });
   }
 
@@ -289,15 +350,21 @@ export async function cancelRequest(actor: AuthUser, requestId: string, meta: Au
 }
 
 /** True if the staff member has at least one complete OVERTIME_IN/
- * OVERTIME_OUT punch pair on this calendar date, per the ZKTime 5.0
- * biometric time clock — the real-world confirmation that the pre-approved
- * OT slot was actually worked. Paired the same way buildTimesheet pairs
- * BREAK_IN/BREAK_OUT: whichever punch comes first opens the pair, the next
- * one of either type closes it. Only presence of a pair matters here — the
- * *paid* hours still come from the originally approved request window, not
- * the punch duration (see completeWork's doc comment for why). */
-async function hasOtPunchPair(staffId: string, date: Date): Promise<boolean> {
-  const dayStart = new Date(date);
+ * OVERTIME_OUT punch pair that actually falls within the approved slot's
+ * [timeIn, timeOut] window, per the ZKTime 5.0 biometric time clock — the
+ * real-world confirmation that the pre-approved OT slot itself was worked,
+ * not just that *some* overtime punches exist that day. A punch pair
+ * outside the approved window (a different, unapproved stretch of time)
+ * must never auto-complete a request — that would let clocking overtime at
+ * any time get credited against whatever approved slot happens to share the
+ * calendar date. Paired the same way buildTimesheet pairs BREAK_IN/
+ * BREAK_OUT: whichever punch comes first opens the pair, the next one of
+ * either type closes it; a pair only counts if the whole open-to-close span
+ * sits inside the window. Only presence of a pair matters here — the *paid*
+ * hours still come from the originally approved request window, not the
+ * punch duration (see completeWork's doc comment for why). */
+async function hasOtPunchPair(staffId: string, timeIn: Date, timeOut: Date): Promise<boolean> {
+  const dayStart = new Date(timeIn);
   dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(dayStart.getTime() + 24 * 3600000);
   const punches = await prisma.timeEntry.findMany({
@@ -308,7 +375,19 @@ async function hasOtPunchPair(staffId: string, date: Date): Promise<boolean> {
     },
     orderBy: { timestamp: "asc" },
   });
-  return punches.length >= 2;
+
+  let openAt: Date | null = null;
+  for (const p of punches) {
+    if (!openAt) {
+      openAt = p.timestamp;
+    } else {
+      if (openAt.getTime() >= timeIn.getTime() && p.timestamp.getTime() <= timeOut.getTime()) {
+        return true;
+      }
+      openAt = null;
+    }
+  }
+  return false;
 }
 
 async function markWorkCompleted(
@@ -344,22 +423,26 @@ async function markWorkCompleted(
 }
 
 /** Auto-completion hook, called after a ZKTime import brings in new
- * OVERTIME_IN/OVERTIME_OUT punches — finds this staff member's APPROVED,
- * not-yet-completed request on the punch's date (if any) and marks it
- * Work Completed with completionSource "DEVICE". No-op if there's no such
- * request or no complete punch pair yet. Returns true if a request was
- * completed. */
+ * OVERTIME_IN/OVERTIME_OUT punches — checks every one of this staff
+ * member's APPROVED, not-yet-completed requests on the punch's date (there
+ * can be more than one) and marks Work Completed (source "DEVICE") whichever
+ * ones actually have a punch pair inside their own approved window — not
+ * just any OT punches that day. Returns true if at least one was completed. */
 export async function reconcileOvertimeCompletion(staffId: string, date: Date): Promise<boolean> {
   const dayKey = date.toISOString().slice(0, 10);
   const candidates = await prisma.overtimeRequest.findMany({
     where: { staffId, status: "APPROVED", cancelled: false, workCompleted: false },
   });
-  const request = candidates.find((r) => r.date.toISOString().slice(0, 10) === dayKey);
-  if (!request) return false;
-  if (!(await hasOtPunchPair(staffId, date))) return false;
+  const sameDay = candidates.filter((r) => r.date.toISOString().slice(0, 10) === dayKey);
 
-  await markWorkCompleted(request.id, staffId, request.date, "DEVICE", null, staffId);
-  return true;
+  let completedAny = false;
+  for (const request of sameDay) {
+    if (await hasOtPunchPair(staffId, request.timeIn, request.timeOut)) {
+      await markWorkCompleted(request.id, staffId, request.date, "DEVICE", null, staffId);
+      completedAny = true;
+    }
+  }
+  return completedAny;
 }
 
 /**
@@ -388,7 +471,7 @@ export async function completeWork(
   if (request.status !== "APPROVED") throw new HttpError(409, "not_approved");
   if (request.workCompleted) throw new HttpError(409, "already_completed");
 
-  const deviceConfirmed = await hasOtPunchPair(request.staffId, request.date);
+  const deviceConfirmed = await hasOtPunchPair(request.staffId, request.timeIn, request.timeOut);
   if (!deviceConfirmed && !options.manual) {
     throw new HttpError(409, "no_device_confirmation");
   }

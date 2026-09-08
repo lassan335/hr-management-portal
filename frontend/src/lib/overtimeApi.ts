@@ -22,6 +22,11 @@ export interface OvertimeRequestRow {
   staff?: { fullName: string; staffId: string };
   hodReviewer?: { fullName: string } | null;
   hrReviewer?: { fullName: string } | null;
+  /** Set when a supervisor created this task directly for the staff member
+   * (already pre-approved), rather than the staff member requesting it
+   * themselves — see the backend's assignTask(). */
+  assignedById?: string | null;
+  assignedBy?: { fullName: string } | null;
   /** Uncapped estimated MVR amount for this single slot — see the backend's
    * otCostForRequest(). Null when the staff member has no Basic Salary on file. */
   estimatedCost?: number | null;
@@ -81,6 +86,11 @@ export interface LedgerRow {
 export const overtimeApi = {
   submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string; isHoliday?: boolean }) =>
     api.post<OvertimeRequestRow>("/api/overtime", input),
+  /** Supervisor-only (Staff.canSupervise or HR/Admin) — creates a
+   * pre-approved task directly for someone else, skipping the normal
+   * submit/approve chain. */
+  assign: (input: { staffId: string; date: string; timeIn: string; timeOut: string; reason: string; notes?: string; isHoliday?: boolean }) =>
+    api.post<OvertimeRequestRow>("/api/overtime/assign", input),
   list: () => api.get<OvertimeRequestRow[]>("/api/overtime"),
   review: (id: string, decision: "APPROVE" | "REJECT") => api.patch(`/api/overtime/${id}`, { decision }),
   cancel: (id: string) => api.post<OvertimeRequestRow>(`/api/overtime/${id}/cancel`, {}),

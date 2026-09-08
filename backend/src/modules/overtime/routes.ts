@@ -4,7 +4,7 @@ import { authenticate } from "../../lib/auth";
 import { requireRole } from "../../lib/rbac";
 import { requestMeta } from "../../lib/audit";
 import * as service from "./service";
-import { overtimeRequestSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema, completeWorkSchema } from "./validation";
+import { overtimeRequestSchema, assignOvertimeSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema, completeWorkSchema } from "./validation";
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void | Response>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -33,6 +33,17 @@ export function overtimeRouter(): Router {
     "/",
     asyncHandler(async (req, res) => {
       res.json(await service.listRequests(req.user!));
+    })
+  );
+
+  // Fine-grained authorization (Staff.canSupervise, independent of `role`)
+  // happens inside the service — most real staff, including the actual
+  // principal/admins, currently carry plain role STAFF.
+  router.post(
+    "/assign",
+    asyncHandler(async (req, res) => {
+      const input = assignOvertimeSchema.parse(req.body);
+      res.status(201).json(await service.assignTask(req.user!, input, requestMeta(req)));
     })
   );
 

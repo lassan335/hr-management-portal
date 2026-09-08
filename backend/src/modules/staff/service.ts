@@ -43,7 +43,13 @@ export async function listStaff(requester: AuthUser, query: ListQuery) {
   } else if (requester.role === Role.HR_ADMIN) {
     if (query.departmentId) where.departmentId = query.departmentId;
   } else {
-    throw Object.assign(new Error("forbidden"), { status: 403 });
+    // Most real staff (including the actual principal/administrators here)
+    // carry plain role STAFF — canSupervise is an explicit, HR-set flag
+    // separate from role. A supervisor sees the whole directory (like
+    // HR_ADMIN) since assigning an overtime task isn't department-scoped.
+    const requesterStaff = await prisma.staff.findUnique({ where: { id: requester.staffId }, select: { canSupervise: true } });
+    if (!requesterStaff?.canSupervise) throw Object.assign(new Error("forbidden"), { status: 403 });
+    if (query.departmentId) where.departmentId = query.departmentId;
   }
 
   if (query.status) where.status = query.status;

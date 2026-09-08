@@ -4,6 +4,8 @@ import { useAuth } from "../../lib/AuthContext";
 import { ApiError } from "../../lib/api";
 import { overtimeApi } from "../../lib/overtimeApi";
 import type { OvertimeRequestRow, MonthlySummary, DashboardRow, LedgerRow } from "../../lib/overtimeApi";
+import { staffApi } from "../../lib/staffApi";
+import type { StaffSummaryRow } from "../../lib/staffApi";
 import { Badge, StatusBadge } from "../../components/ui";
 
 const now = new Date();
@@ -42,6 +44,7 @@ export function OvertimePage() {
 function SubmitAndList() {
   const { user } = useAuth();
   const [list, setList] = useState<OvertimeRequestRow[]>([]);
+  const [canSupervise, setCanSupervise] = useState(false);
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
     timeIn: "15:00",
@@ -52,6 +55,13 @@ function SubmitAndList() {
   const [error, setError] = useState<string | null>(null);
   const canReview = user?.role === Role.HOD || user?.role === Role.HR_ADMIN;
   const isHrAdmin = user?.role === Role.HR_ADMIN;
+  // Most real staff (including the actual principal/administrators here)
+  // carry plain role STAFF — canSupervise is a separate, HR-set flag.
+  const canAssign = isHrAdmin || canSupervise;
+
+  useEffect(() => {
+    staffApi.getMe().then((me) => setCanSupervise(me.canSupervise)).catch(() => setCanSupervise(false));
+  }, []);
 
   async function refresh() {
     setList(await overtimeApi.list());
@@ -100,8 +110,14 @@ function SubmitAndList() {
     }
   }
 
+  const assignedToMe = list.filter((r) => r.assignedById);
+  const ownRequests = canReview ? list : list.filter((r) => !r.assignedById);
+
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4">
+    <>
+      {!canReview && <AssignedToMeTable rows={assignedToMe} onCancelled={refresh} setError={setError} />}
+      {canAssign && <AssignTaskForm onAssigned={refresh} />}
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
       <h2 className="font-medium text-slate-700 mb-2">
         {isHrAdmin ? "Pending & Awaiting Completion" : canReview ? "Pending Requests" : "My Pre-requested Overtime Slips"}
       </h2>
@@ -123,7 +139,7 @@ function SubmitAndList() {
             </tr>
           </thead>
           <tbody>
-            {list.map((r) => (
+            {ownRequests.map((r) => (
               <tr key={r.id} className="border-t border-slate-100 align-top">
                 {canReview && <td className="px-2 py-1">{r.staff ? `${r.staff.fullName} (${r.staff.staffId})` : ""}</td>}
                 <td className="px-2 py-1">{r.date.slice(0, 10)}{r.isHoliday ? " (holiday)" : ""}</td>
@@ -159,7 +175,7 @@ function SubmitAndList() {
                 </td>
               </tr>
             ))}
-            {list.length === 0 && (
+            {ownRequests.length === 0 && (
               <tr>
                 <td colSpan={canReview ? 11 : 10} className="text-slate-400 px-2 py-2">None.</td>
               </tr>
@@ -197,6 +213,165 @@ function SubmitAndList() {
           when you do the work — that's what confirms it for payroll, not a button here.
         </p>
       )}
+      </div>
+    </>
+  );
+}
+
+function AssignedToMeTable({
+  rows,
+  onCancelled,
+  setError,
+}: {
+  rows: OvertimeRequestRow[];
+  onCancelled: () => void;
+  setError: (msg: string | null) => void;
+}) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 className="font-medium text-slate-700 mb-2">Pre Approved Tasks Assigned To Me</h2>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-left text-slate-500">
+            <tr>
+              <th className="px-2 py-1">Date</th>
+              <th className="px-2 py-1">Start Time</th>
+              <th className="px-2 py-1">End Time</th>
+              <th className="px-2 py-1">Description</th>
+              <th className="px-2 py-1">Assigned By</th>
+              <th className="px-2 py-1">Requested On</th>
+              <th className="px-2 py-1">Work Completed</th>
+              <th className="px-2 py-1">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100 align-top">
+                <td className="px-2 py-1">{r.date.slice(0, 10)}{r.isHoliday ? " (holiday)" : ""}</td>
+                <td className="px-2 py-1">{formatTime(r.timeIn)}</td>
+                <td className="px-2 py-1">{formatTime(r.timeOut)}</td>
+                <td className="px-2 py-1">{r.reason}</td>
+                <td className="px-2 py-1">{r.assignedBy?.fullName ?? "—"}</td>
+                <td className="px-2 py-1">{r.createdAt.slice(0, 10)}</td>
+                <td className="px-2 py-1">
+                  {r.workCompleted ? (
+                    <Badge tone="green">Yes{r.completionSource === "MANUAL" ? " (HR)" : r.completionSource === "DEVICE" ? " (Device)" : ""}</Badge>
+                  ) : (
+                    <Badge tone="slate">Awaiting time clock</Badge>
+                  )}
+                </td>
+                <td className="px-2 py-1">
+                  {!r.cancelled && !r.workCompleted && (
+                    <button
+                      className="text-red-600 text-xs"
+                      onClick={async () => {
+                        try {
+                          await overtimeApi.cancel(r.id);
+                          onCancelled();
+                        } catch (e) {
+                          setError(e instanceof ApiError ? e.message : "Failed to cancel");
+                        }
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {r.cancelled && <Badge tone="red">Cancelled</Badge>}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={8} className="text-slate-400 px-2 py-2">None.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-slate-400 text-xs mt-2">
+        Already approved by whoever assigned it — punch OVERTIME IN / OVERTIME OUT on the time clock when you do the work,
+        the same as any other slot.
+      </p>
+    </div>
+  );
+}
+
+function AssignTaskForm({ onAssigned }: { onAssigned: () => void }) {
+  const [staffList, setStaffList] = useState<StaffSummaryRow[]>([]);
+  const [form, setForm] = useState({
+    staffId: "",
+    date: new Date().toISOString().slice(0, 10),
+    timeIn: "18:00",
+    timeOut: "22:30",
+    reason: "",
+    isHoliday: false,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    staffApi.list().then(setStaffList).catch(() => setStaffList([]));
+  }, []);
+
+  async function assign() {
+    setError(null);
+    setStatus(null);
+    if (!form.staffId) {
+      setError("Choose a staff member.");
+      return;
+    }
+    try {
+      await overtimeApi.assign(form);
+      setForm({ ...form, reason: "" });
+      setStatus("Task assigned.");
+      onAssigned();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to assign task");
+    }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 className="font-medium text-slate-700 mb-2">Send New Overtime Work Request Form</h2>
+      <div className="flex flex-wrap gap-2 items-end">
+        <label className="flex flex-col text-xs">Staff
+          <select
+            value={form.staffId}
+            onChange={(e) => setForm({ ...form, staffId: e.target.value })}
+            className="border border-slate-300 rounded-md px-2 py-1"
+          >
+            <option value="">Select…</option>
+            {staffList.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.fullName} ({s.staffId})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col text-xs">Date
+          <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex flex-col text-xs">Start Time
+          <input type="time" value={form.timeIn} onChange={(e) => setForm({ ...form, timeIn: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex flex-col text-xs">End Time
+          <input type="time" value={form.timeOut} onChange={(e) => setForm({ ...form, timeOut: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex items-center gap-1 text-xs">
+          <input type="checkbox" checked={form.isHoliday} onChange={(e) => setForm({ ...form, isHoliday: e.target.checked })} />
+          Holiday
+        </label>
+        <input placeholder="Description" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-sm flex-1" />
+        <button className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md" onClick={assign}>
+          Send OT Request
+        </button>
+      </div>
+      <p className="text-slate-400 text-xs mt-2">
+        Already pre-approved — the staff member will see this under "Pre Approved Tasks Assigned To Me" and just needs to
+        punch OVERTIME IN / OVERTIME OUT on the time clock when they do the work.
+      </p>
+      {error && <p className="text-red-600 text-xs mt-2">{error}</p>}
+      {status && <p className="text-green-600 text-xs mt-2">{status}</p>}
     </div>
   );
 }

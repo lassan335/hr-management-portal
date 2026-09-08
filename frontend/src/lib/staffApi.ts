@@ -7,6 +7,7 @@ export interface StaffSummaryRow {
   departmentId: string;
   designation: string;
   status: string;
+  canSupervise: boolean;
   photoDocumentId: string | null;
 }
 
@@ -29,6 +30,7 @@ export interface StaffDetail {
   dateJoined: string;
   contractEndDate: string | null;
   status: string;
+  canSupervise: boolean;
   photoDocumentId: string | null;
 }
 

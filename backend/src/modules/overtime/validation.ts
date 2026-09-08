@@ -13,6 +13,12 @@ export const overtimeRequestSchema = z.object({
   isHoliday: z.boolean().optional().default(false),
 });
 
+// A supervisor assigning a task directly to someone else — same shape as a
+// self-submitted request, plus which staff member it's for.
+export const assignOvertimeSchema = overtimeRequestSchema.extend({
+  staffId: z.string().min(1),
+});
+
 export const reviewSchema = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
 });

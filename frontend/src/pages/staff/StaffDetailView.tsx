@@ -89,6 +89,7 @@ export function StaffDetailView({ targetId }: { targetId: string }) {
           targetId={targetId}
           currentRole={staff.role}
           currentDepartmentId={staff.departmentId}
+          currentCanSupervise={staff.canSupervise}
           isSelf={isSelf}
           onChanged={(msg) => {
             setMessage(msg);
@@ -215,18 +216,21 @@ function RoleAccessSection({
   targetId,
   currentRole,
   currentDepartmentId,
+  currentCanSupervise,
   isSelf,
   onChanged,
 }: {
   targetId: string;
   currentRole: string;
   currentDepartmentId: string;
+  currentCanSupervise: boolean;
   isSelf: boolean;
   onChanged: (msg: string) => void;
 }) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [role, setRole] = useState(currentRole);
   const [departmentId, setDepartmentId] = useState(currentDepartmentId);
+  const [canSupervise, setCanSupervise] = useState(currentCanSupervise);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -234,13 +238,13 @@ function RoleAccessSection({
     staffApi.departments().then(setDepartments).catch(() => setDepartments([]));
   }, []);
 
-  const dirty = role !== currentRole || departmentId !== currentDepartmentId;
+  const dirty = role !== currentRole || departmentId !== currentDepartmentId || canSupervise !== currentCanSupervise;
 
   async function save() {
     setSaving(true);
     setError(null);
     try {
-      await staffApi.adminUpdate(targetId, { role, departmentId });
+      await staffApi.adminUpdate(targetId, { role, departmentId, canSupervise });
       onChanged("Access updated. If this changes what they can see, their next request will require signing in again.");
     } catch (e) {
       setError((e as Error).message || "Failed to update access.");
@@ -291,6 +295,10 @@ function RoleAccessSection({
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs pb-1.5">
+            <input type="checkbox" checked={canSupervise} onChange={(e) => setCanSupervise(e.target.checked)} />
+            Can assign overtime tasks (Supervisor)
           </label>
           <button
             disabled={!dirty || saving}

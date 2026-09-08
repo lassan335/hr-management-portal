@@ -24,8 +24,11 @@ export const createStaffSchema = z.object({
 });
 
 // HR/Admin direct update — every field is fair game, unlike the self-service
-// edit-request flow below.
-export const adminUpdateStaffSchema = createStaffSchema.partial();
+// edit-request flow below. canSupervise is HR-only and never set at
+// creation, so it's added here rather than on createStaffSchema.
+export const adminUpdateStaffSchema = createStaffSchema.partial().extend({
+  canSupervise: z.boolean().optional(),
+});
 
 export const selfEditableFieldEnum = z.enum(STAFF_SELF_EDITABLE_FIELDS);
 export const lockedFieldEnum = z.enum(STAFF_LOCKED_FIELDS);

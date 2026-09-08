@@ -10,6 +10,7 @@ export function toStaffSummary(staff: Staff) {
     departmentId: staff.departmentId,
     designation: staff.designation,
     status: staff.status,
+    canSupervise: staff.canSupervise,
     photoDocumentId: staff.photoDocumentId,
   };
 }
@@ -41,6 +42,7 @@ export function toStaffDetail(staff: Staff) {
     reportingManagerId: staff.reportingManagerId,
     deviceUserId: staff.deviceUserId,
     status: staff.status,
+    canSupervise: staff.canSupervise,
     photoDocumentId: staff.photoDocumentId,
     createdAt: staff.createdAt,
     updatedAt: staff.updatedAt,

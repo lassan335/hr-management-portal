@@ -16,6 +16,7 @@ import { leaveRouter } from "./modules/leave/routes";
 import { payrollRouter } from "./modules/payroll/routes";
 import { holidaysRouter } from "./modules/holidays/routes";
 import { startZktimeWatcher } from "./jobs/zktimeWatcher";
+import { startZktimeDevicePoll } from "./jobs/zktimeDevicePoll";
 
 // Fail fast on a misconfigured/missing ENCRYPTION_KEY at boot, not on the
 // first PII read/write in production.
@@ -73,3 +74,4 @@ app.listen(env.port, () => {
 });
 
 startZktimeWatcher();
+startZktimeDevicePoll();

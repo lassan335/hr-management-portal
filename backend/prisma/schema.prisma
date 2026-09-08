@@ -63,6 +63,7 @@ enum PunchType {
 enum AttendanceSource {
   MANUAL
   IMPORT
+  DEVICE
 }
 
 enum DocumentType {
@@ -78,6 +79,7 @@ enum NotificationType {
   OVERTIME_APPROVED
   OVERTIME_REJECTED
   OVERTIME_WORK_COMPLETED
+  OVERTIME_TASK_ASSIGNED
   LEAVE_SUBMITTED
   LEAVE_APPROVED
   LEAVE_REJECTED
@@ -152,6 +154,12 @@ model Staff {
   /// ZKTime 5.0 biometric device user id, once matched/assigned.
   deviceUserId String? @unique
 
+  /// HR/Admin-set flag (independent of `role`, which most real staff carry
+  /// as plain STAFF regardless of their actual job title) marking someone
+  /// allowed to directly assign a pre-approved overtime task to another
+  /// staff member — see OvertimeRequest.assignedById.
+  canSupervise Boolean @default(false)
+
   status          StaffStatus @default(ACTIVE)
   /// Bumped on logout, status change, or role/department change to
   /// invalidate any outstanding session JWTs immediately (see lib/auth.ts).
@@ -171,6 +179,7 @@ model Staff {
   overtimeRequests   OvertimeRequest[] @relation("OvertimeStaff")
   overtimeHodReviews OvertimeRequest[] @relation("OvertimeHodReviewer")
   overtimeHrReviews  OvertimeRequest[] @relation("OvertimeHrReviewer")
+  overtimeAssigned   OvertimeRequest[] @relation("OvertimeAssignedBy")
 
   timeEntries        TimeEntry[]
   attendanceDevice   AttendanceDevice?
@@ -323,6 +332,15 @@ model OvertimeRequest {
   hrReviewerId  String?
   hrReviewer    Staff?         @relation("OvertimeHrReviewer", fields: [hrReviewerId], references: [id])
   hrReviewedAt  DateTime?
+
+  /// Set when a supervisor (Staff.canSupervise, or HR/Admin) creates this
+  /// task directly for someone else, already pre-approved — skips the
+  /// normal staff-submits/HOD-then-HR-approves flow entirely (status is
+  /// APPROVED from creation, hodReviewerId/hrReviewerId stay null since it
+  /// never went through that chain). Null for an ordinary self-submitted
+  /// request.
+  assignedById String?
+  assignedBy   Staff?  @relation("OvertimeAssignedBy", fields: [assignedById], references: [id])
 
   /// Staff-initiated withdrawal — distinct from HOD/HR rejecting it.
   cancelled   Boolean   @default(false)

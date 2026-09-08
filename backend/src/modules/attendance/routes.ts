@@ -60,8 +60,12 @@ export function attendanceRouter(): Router {
   const router = Router();
   router.use(authenticate);
 
+  // HR/Admin only — manual attendance edits are otherwise restricted to the
+  // correction-request flow (staff request, HR/Admin final approval), never
+  // a direct self-service punch. See clockPunch's doc comment.
   router.post(
     "/clock",
+    requireRole(Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const { punchType } = clockSchema.parse(req.body);
       res.status(201).json(await service.clockPunch(req.user!, punchType));

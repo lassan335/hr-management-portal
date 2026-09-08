@@ -3,7 +3,7 @@ import crypto from "crypto";
 import path from "path";
 import { parse as parseCsv } from "csv-parse/sync";
 import ExcelJS from "exceljs";
-import { PunchType } from "@hr/shared";
+import { AttendanceSource, PunchType } from "@hr/shared";
 import { prisma } from "../lib/prisma";
 import { reconcileOvertimeCompletion } from "../modules/overtime/service";
 
@@ -166,10 +166,209 @@ export function toParsedPunches(headers: string[], rows: unknown[][]): { punches
   return { punches, skipped };
 }
 
+export interface ImportPunchesOptions {
+  fileName: string;
+  fileHash?: string;
+  importedBy?: string | null;
+  source?: AttendanceSource;
+}
+
+/**
+ * Shared entry point for the file watcher and the manual admin upload
+ * endpoint — one insert/match/reconcile code path so behavior never
+ * diverges between them. Unmatched device IDs are recorded in the review
+ * queue, never dropped. Volumes here are small (one export at a time), so a
+ * straightforward per-punch loop is fine — device polling uses
+ * importDevicePunchesBatched instead, which is built for the thousands of
+ * records a device poll re-reads every cycle.
+ */
+export async function importParsedPunches(
+  punches: ParsedPunch[],
+  opts: ImportPunchesOptions
+): Promise<ImportResult> {
+  const source = opts.source ?? AttendanceSource.IMPORT;
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+  // (staffId, calendar date) pairs that received an OVERTIME_IN/OVERTIME_OUT
+  // punch in this import — reconciled against any APPROVED, not-yet-completed
+  // OvertimeRequest once every row is in, so a request submitted for a date
+  // that already has punches imported still gets auto-completed correctly.
+  const otTouchedDays = new Map<string, { staffId: string; date: Date }>();
+
+  const syncLog = await prisma.attendanceSyncLog.create({
+    data: {
+      fileName: opts.fileName,
+      fileHash: opts.fileHash,
+      processedCount: punches.length,
+      matchedCount: 0,
+      unmatchedCount: 0,
+      importedBy: opts.importedBy ?? null,
+    },
+  });
+
+  for (const punch of punches) {
+    // Staff.deviceUserId is the source of truth for matching — it's set
+    // directly on provisioning and kept in sync by resolveUnmatched().
+    // AttendanceDevice is a registry/audit table for admin visibility, not
+    // itself the match source, so an import never silently misses a staff
+    // member whose deviceUserId was set without a corresponding
+    // AttendanceDevice row (e.g. via direct staff provisioning or seeding).
+    const staff = await prisma.staff.findUnique({
+      where: { deviceUserId: punch.deviceUserId },
+      select: { id: true },
+    });
+
+    await prisma.attendanceDevice.upsert({
+      where: { deviceUserId: punch.deviceUserId },
+      create: { deviceUserId: punch.deviceUserId, staffId: staff?.id },
+      update: staff ? { staffId: staff.id } : {},
+    });
+
+    if (staff) {
+      await prisma.timeEntry.create({
+        data: {
+          staffId: staff.id,
+          timestamp: punch.timestamp,
+          punchType: punch.punchType,
+          source,
+        },
+      });
+      matchedCount += 1;
+      if (punch.punchType === PunchType.OVERTIME_IN || punch.punchType === PunchType.OVERTIME_OUT) {
+        const dayKey = `${staff.id}|${punch.timestamp.toISOString().slice(0, 10)}`;
+        otTouchedDays.set(dayKey, { staffId: staff.id, date: punch.timestamp });
+      }
+    } else {
+      await prisma.attendanceUnmatchedEntry.create({
+        data: {
+          syncLogId: syncLog.id,
+          deviceUserId: punch.deviceUserId,
+          timestamp: punch.timestamp,
+          punchType: punch.punchType,
+        },
+      });
+      unmatchedCount += 1;
+    }
+  }
+
+  await prisma.attendanceSyncLog.update({
+    where: { id: syncLog.id },
+    data: { matchedCount, unmatchedCount },
+  });
+
+  for (const { staffId, date } of otTouchedDays.values()) {
+    await reconcileOvertimeCompletion(staffId, date);
+  }
+
+  return { syncLogId: syncLog.id, processedCount: punches.length, matchedCount, unmatchedCount };
+}
+
+/**
+ * Device-poll entry point. A device poll re-reads the terminal's entire
+ * in-memory log every cycle (no "since last sync" cursor), so this runs at a
+ * completely different scale than importParsedPunches — thousands of
+ * records, most of which are already-imported repeats from earlier polls.
+ * Doing a handful of batched queries (one Staff lookup, one existing-rows
+ * lookup, two createMany calls) instead of several sequential round trips
+ * *per punch* is the difference between a poll finishing in seconds versus
+ * potentially hours over a remote (Supabase) connection.
+ */
+export async function importDevicePunchesBatched(
+  punches: ParsedPunch[],
+  opts: { fileName: string; source: AttendanceSource }
+): Promise<ImportResult> {
+  const syncLog = await prisma.attendanceSyncLog.create({
+    data: { fileName: opts.fileName, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0 },
+  });
+
+  if (punches.length === 0) {
+    return { syncLogId: syncLog.id, processedCount: 0, matchedCount: 0, unmatchedCount: 0 };
+  }
+
+  const uniqueDeviceUserIds = [...new Set(punches.map((p) => p.deviceUserId))];
+
+  const staffRows = await prisma.staff.findMany({
+    where: { deviceUserId: { in: uniqueDeviceUserIds } },
+    select: { id: true, deviceUserId: true },
+  });
+  const staffIdByDeviceUserId = new Map(staffRows.map((s) => [s.deviceUserId as string, s.id]));
+
+  // AttendanceDevice is a registry/audit table, one row per device user id
+  // (not per punch) — a small, bounded set even when the punch volume isn't.
+  for (const deviceUserId of uniqueDeviceUserIds) {
+    const staffId = staffIdByDeviceUserId.get(deviceUserId);
+    await prisma.attendanceDevice.upsert({
+      where: { deviceUserId },
+      create: { deviceUserId, staffId },
+      update: staffId ? { staffId } : {},
+    });
+  }
+
+  const matchedStaffIds = [...staffIdByDeviceUserId.values()];
+  const existingTimeEntries = matchedStaffIds.length
+    ? await prisma.timeEntry.findMany({
+        where: { staffId: { in: matchedStaffIds }, source: opts.source },
+        select: { staffId: true, timestamp: true, punchType: true },
+      })
+    : [];
+  const seenTimeEntryKeys = new Set(
+    existingTimeEntries.map((e) => `${e.staffId}|${e.timestamp.getTime()}|${e.punchType}`)
+  );
+
+  const existingUnmatched = await prisma.attendanceUnmatchedEntry.findMany({
+    where: { deviceUserId: { in: uniqueDeviceUserIds } },
+    select: { deviceUserId: true, timestamp: true, punchType: true },
+  });
+  const seenUnmatchedKeys = new Set(
+    existingUnmatched.map((e) => `${e.deviceUserId}|${e.timestamp.getTime()}|${e.punchType}`)
+  );
+
+  const timeEntriesToCreate: { staffId: string; timestamp: Date; punchType: PunchType; source: AttendanceSource }[] = [];
+  const unmatchedToCreate: { syncLogId: string; deviceUserId: string; timestamp: Date; punchType: PunchType }[] = [];
+  const otTouchedDays = new Map<string, { staffId: string; date: Date }>();
+
+  for (const punch of punches) {
+    const staffId = staffIdByDeviceUserId.get(punch.deviceUserId);
+    if (staffId) {
+      const key = `${staffId}|${punch.timestamp.getTime()}|${punch.punchType}`;
+      if (seenTimeEntryKeys.has(key)) continue;
+      seenTimeEntryKeys.add(key); // also guards duplicate punches within this same poll
+      timeEntriesToCreate.push({ staffId, timestamp: punch.timestamp, punchType: punch.punchType, source: opts.source });
+      if (punch.punchType === PunchType.OVERTIME_IN || punch.punchType === PunchType.OVERTIME_OUT) {
+        const dayKey = `${staffId}|${punch.timestamp.toISOString().slice(0, 10)}`;
+        otTouchedDays.set(dayKey, { staffId, date: punch.timestamp });
+      }
+    } else {
+      const key = `${punch.deviceUserId}|${punch.timestamp.getTime()}|${punch.punchType}`;
+      if (seenUnmatchedKeys.has(key)) continue;
+      seenUnmatchedKeys.add(key);
+      unmatchedToCreate.push({
+        syncLogId: syncLog.id,
+        deviceUserId: punch.deviceUserId,
+        timestamp: punch.timestamp,
+        punchType: punch.punchType,
+      });
+    }
+  }
+
+  if (timeEntriesToCreate.length) await prisma.timeEntry.createMany({ data: timeEntriesToCreate });
+  if (unmatchedToCreate.length) await prisma.attendanceUnmatchedEntry.createMany({ data: unmatchedToCreate });
+
+  const matchedCount = timeEntriesToCreate.length;
+  const unmatchedCount = unmatchedToCreate.length;
+
+  await prisma.attendanceSyncLog.update({ where: { id: syncLog.id }, data: { matchedCount, unmatchedCount } });
+
+  for (const { staffId, date } of otTouchedDays.values()) {
+    await reconcileOvertimeCompletion(staffId, date);
+  }
+
+  return { syncLogId: syncLog.id, processedCount: punches.length, matchedCount, unmatchedCount };
+}
+
 /**
  * Shared entry point for both the file-watcher and the manual admin upload
  * endpoint — one code path, so behavior never diverges between the two.
- * Unmatched device IDs are recorded in the review queue, never dropped.
  *
  * Guards against re-processing the same export twice (e.g. a human
  * re-uploading a file they already imported) via a content hash independent
@@ -228,71 +427,5 @@ export async function processZKTimeFile(filePath: string, importedBy: string | n
     throw err;
   }
 
-  let matchedCount = 0;
-  let unmatchedCount = 0;
-  // (staffId, calendar date) pairs that received an OVERTIME_IN/OVERTIME_OUT
-  // punch in this import — reconciled against any APPROVED, not-yet-completed
-  // OvertimeRequest once every row is in, so a request submitted for a date
-  // that already has punches imported still gets auto-completed correctly.
-  const otTouchedDays = new Map<string, { staffId: string; date: Date }>();
-
-  const syncLog = await prisma.attendanceSyncLog.create({
-    data: { fileName, fileHash, processedCount: punches.length, matchedCount: 0, unmatchedCount: 0, importedBy },
-  });
-
-  for (const punch of punches) {
-    // Staff.deviceUserId is the source of truth for matching — it's set
-    // directly on provisioning and kept in sync by resolveUnmatched().
-    // AttendanceDevice is a registry/audit table for admin visibility, not
-    // itself the match source, so an import never silently misses a staff
-    // member whose deviceUserId was set without a corresponding
-    // AttendanceDevice row (e.g. via direct staff provisioning or seeding).
-    const staff = await prisma.staff.findUnique({
-      where: { deviceUserId: punch.deviceUserId },
-      select: { id: true },
-    });
-
-    await prisma.attendanceDevice.upsert({
-      where: { deviceUserId: punch.deviceUserId },
-      create: { deviceUserId: punch.deviceUserId, staffId: staff?.id },
-      update: staff ? { staffId: staff.id } : {},
-    });
-
-    if (staff) {
-      await prisma.timeEntry.create({
-        data: {
-          staffId: staff.id,
-          timestamp: punch.timestamp,
-          punchType: punch.punchType,
-          source: "IMPORT",
-        },
-      });
-      matchedCount += 1;
-      if (punch.punchType === PunchType.OVERTIME_IN || punch.punchType === PunchType.OVERTIME_OUT) {
-        const dayKey = `${staff.id}|${punch.timestamp.toISOString().slice(0, 10)}`;
-        otTouchedDays.set(dayKey, { staffId: staff.id, date: punch.timestamp });
-      }
-    } else {
-      await prisma.attendanceUnmatchedEntry.create({
-        data: {
-          syncLogId: syncLog.id,
-          deviceUserId: punch.deviceUserId,
-          timestamp: punch.timestamp,
-          punchType: punch.punchType,
-        },
-      });
-      unmatchedCount += 1;
-    }
-  }
-
-  await prisma.attendanceSyncLog.update({
-    where: { id: syncLog.id },
-    data: { matchedCount, unmatchedCount },
-  });
-
-  for (const { staffId, date } of otTouchedDays.values()) {
-    await reconcileOvertimeCompletion(staffId, date);
-  }
-
-  return { syncLogId: syncLog.id, processedCount: punches.length, matchedCount, unmatchedCount };
+  return importParsedPunches(punches, { fileName, fileHash, importedBy });
 }

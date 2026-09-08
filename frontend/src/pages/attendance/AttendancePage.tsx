@@ -40,54 +40,11 @@ export function AttendancePage() {
         </label>
       </div>
 
-      <ClockCard />
       <MyTimesheet from={from} to={to} />
 
       {(user?.role === Role.HOD || user?.role === Role.HR_ADMIN) && <DepartmentDashboard from={from} to={to} />}
       <CorrectionsSection />
       {user?.role === Role.HR_ADMIN && <ZktimeImportSection />}
-    </div>
-  );
-}
-
-const CLOCK_BUTTONS: { punchType: PunchType; label: string; className: string }[] = [
-  { punchType: "CHECK_IN", label: "Check In", className: "bg-brand-600 hover:bg-brand-700" },
-  { punchType: "CHECK_OUT", label: "Check Out", className: "bg-slate-800 hover:bg-slate-900" },
-  { punchType: "BREAK_IN", label: "Break In", className: "bg-amber-600 hover:bg-amber-700" },
-  { punchType: "BREAK_OUT", label: "Break Out", className: "bg-amber-500 hover:bg-amber-600" },
-  { punchType: "OVERTIME_IN", label: "Overtime In", className: "bg-purple-600 hover:bg-purple-700" },
-  { punchType: "OVERTIME_OUT", label: "Overtime Out", className: "bg-purple-500 hover:bg-purple-600" },
-];
-
-function ClockCard() {
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function punch(punchType: PunchType) {
-    setError(null);
-    try {
-      const entry = (await attendanceApi.clock(punchType)) as { punchType: string; timestamp: string };
-      setMessage(`Clocked ${entry.punchType.replace(/_/g, " ")} at ${new Date(entry.timestamp).toLocaleTimeString()}.`);
-    } catch (e) {
-      setError((e as Error).message || "Failed to clock.");
-    }
-  }
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {CLOCK_BUTTONS.map((b) => (
-          <button
-            key={b.punchType}
-            onClick={() => punch(b.punchType)}
-            className={`text-white text-sm px-4 py-2 rounded-md ${b.className}`}
-          >
-            {b.label}
-          </button>
-        ))}
-      </div>
-      {message && <p className="text-sm text-slate-500 mt-2">{message}</p>}
-      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
     </div>
   );
 }
@@ -113,6 +70,16 @@ function MyTimesheet({ from, to }: { from: string; to: string }) {
   );
 }
 
+/** First (for an "in" type) or last (for an "out" type) punch of a given
+ * type that day, formatted as a time — mirrors how firstIn/lastOut already
+ * summarize Check In/Out, applied the same way to Break and Overtime. */
+function punchTime(punches: DayTimesheet["punches"], type: PunchType, which: "first" | "last"): string {
+  const matches = punches.filter((p) => p.punchType === type);
+  if (matches.length === 0) return "—";
+  const target = which === "first" ? matches[0] : matches[matches.length - 1];
+  return new Date(target.timestamp).toLocaleTimeString();
+}
+
 function TimesheetTable({ days }: { days: DayTimesheet[] }) {
   return (
     <div className="overflow-x-auto">
@@ -120,8 +87,12 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
         <thead className="text-left text-slate-500">
           <tr>
             <th className="px-2 py-1">Date</th>
-            <th className="px-2 py-1">First In</th>
-            <th className="px-2 py-1">Last Out</th>
+            <th className="px-2 py-1">Check In</th>
+            <th className="px-2 py-1">Check Out</th>
+            <th className="px-2 py-1">Break In</th>
+            <th className="px-2 py-1">Break Out</th>
+            <th className="px-2 py-1">OT In</th>
+            <th className="px-2 py-1">OT Out</th>
             <th className="px-2 py-1">Hours</th>
             <th className="px-2 py-1">Break</th>
             <th className="px-2 py-1">OT Punched</th>
@@ -134,11 +105,16 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
               <td className="px-2 py-1">{d.date}</td>
               <td className="px-2 py-1">{d.firstIn ? new Date(d.firstIn).toLocaleTimeString() : "—"}</td>
               <td className="px-2 py-1">{d.lastOut ? new Date(d.lastOut).toLocaleTimeString() : "—"}</td>
+              <td className="px-2 py-1">{punchTime(d.punches, "BREAK_IN", "first")}</td>
+              <td className="px-2 py-1">{punchTime(d.punches, "BREAK_OUT", "last")}</td>
+              <td className="px-2 py-1">{punchTime(d.punches, "OVERTIME_IN", "first")}</td>
+              <td className="px-2 py-1">{punchTime(d.punches, "OVERTIME_OUT", "last")}</td>
               <td className="px-2 py-1">{d.hoursWorked}</td>
               <td className="px-2 py-1">{d.breakHours > 0 ? `${d.breakHours}h` : "—"}</td>
               <td className="px-2 py-1">{d.otPunchedHours > 0 ? `${d.otPunchedHours}h` : "—"}</td>
               <td className="px-2 py-1 space-x-1 space-y-1">
                 {d.lateArrival && <Badge tone="amber">Late</Badge>}
+                {d.missingCheckout && <Badge tone="amber">Missing checkout</Badge>}
                 {d.earlyDeparture && <Badge tone="amber">Early leave</Badge>}
                 {d.overtimeHours > 0 && <Badge tone="blue">+{d.overtimeHours}h OT</Badge>}
                 {d.holidayAttendanceEligible && <Badge tone="green">Holiday attendance eligible</Badge>}
@@ -147,7 +123,7 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
             </tr>
           ))}
           {days.length === 0 && (
-            <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">No entries in range.</td></tr>
+            <tr><td colSpan={11} className="px-2 py-4 text-center text-slate-400">No entries in range.</td></tr>
           )}
         </tbody>
       </table>

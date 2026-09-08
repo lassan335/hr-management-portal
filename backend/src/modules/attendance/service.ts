@@ -13,15 +13,20 @@ import { buildReportExcel } from "../../lib/reportExcel";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
 import { holidayDateSet } from "../holidays/service";
 import { buildTimesheet, shiftSettingsFor } from "./timesheet";
+import { reconcileOvertimeCompletion } from "../overtime/service";
 import type { correctionSchema } from "./validation";
 import type { z } from "zod";
 
 type AuditMeta = { ipAddress?: string; userAgent?: string };
 
-/** With six distinct punch types across three independent pairs (regular,
- * break, overtime), there's no single sane "toggle the last punch" guess
- * the way a plain IN/OUT clock could — the caller always says which of the
- * six they mean (see the six explicit buttons on the Attendance page). */
+/** HR/Admin-only (see the route's requireRole gate) — regular staff have no
+ * self-service way to punch or otherwise manually create a TimeEntry; their
+ * only path to a manual attendance edit is a correction request, which
+ * still requires HR/Admin's final approval (see reviewCorrection). With six
+ * distinct punch types across three independent pairs (regular, break,
+ * overtime), there's no single sane "toggle the last punch" guess the way a
+ * plain IN/OUT clock could — the caller always says which of the six they
+ * mean. */
 export async function clockPunch(actor: AuthUser, punchType: PunchType) {
   const entry = await prisma.timeEntry.create({
     data: { staffId: actor.staffId, timestamp: new Date(), punchType, source: "MANUAL" },
@@ -103,6 +108,7 @@ export async function exportTimesheetPdf(
       d.hoursWorked,
       [
         d.lateArrival && "Late",
+        d.missingCheckout && "Missing checkout",
         d.earlyDeparture && "Early leave",
         d.breakHours > 0 && `${d.breakHours}h break`,
         d.otPunchedHours > 0 && `${d.otPunchedHours}h OT punched`,
@@ -399,6 +405,13 @@ export async function reviewCorrection(
         source: "MANUAL",
       },
     });
+    // A corrected OVERTIME_IN/OUT punch can be exactly what completes an
+    // approved OT request (or now, for the first time, falls inside its
+    // window) — re-run the same check a real device import triggers so
+    // this doesn't silently stay "Awaiting time clock" forever.
+    if (request.requestedPunchType === PunchType.OVERTIME_IN || request.requestedPunchType === PunchType.OVERTIME_OUT) {
+      await reconcileOvertimeCompletion(request.staffId, request.requestedTime);
+    }
   }
 
   if (newStatus === "APPROVED" || newStatus === "REJECTED") {

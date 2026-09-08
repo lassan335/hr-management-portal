@@ -5,9 +5,17 @@ export interface DayTimesheet {
   date: string;
   firstIn: string | null;
   lastOut: string | null;
+  /** Every raw punch that day, chronological — the individual Check
+   * In/Out, Break In/Out, and Overtime In/Out taps behind the summary
+   * columns above. */
+  punches: { timestamp: string; punchType: string }[];
+  /** Payroll hours: simply lastOut minus firstIn. Break/overtime punches
+   * are informational only (see breakHours/otPunchedHours below) and never
+   * change this — per school policy, only Check In/Check Out count toward
+   * paid hours. */
   hoursWorked: number;
-  /** Total time between paired BREAK_IN/BREAK_OUT punches, already excluded
-   * from hoursWorked above. */
+  /** Total time between paired BREAK_IN/BREAK_OUT punches — shown for
+   * reference only, NOT subtracted from hoursWorked above. */
   breakHours: number;
   /** Total time between paired OVERTIME_IN/OVERTIME_OUT punches — the
    * staff member's ACTUAL clocked overtime, separate from `overtimeHours`
@@ -19,7 +27,14 @@ export interface DayTimesheet {
   /** Minutes between shiftStart and firstIn — 0 when not late. Used by the
    * salary slip's per-minute late deduction. */
   lateMinutes: number;
+  /** True when there's a CHECK_OUT that day but no CHECK_IN at all — the
+   * mirror case of missingCheckout below. hoursWorked is 0 for the day when
+   * this is true, since there's no check-in to measure from. */
   earlyDeparture: boolean;
+  /** True when there's a CHECK_IN that day but no CHECK_OUT at all — a
+   * missed final tap. hoursWorked is 0 for the day when this is true, since
+   * there's no checkout to measure to. */
+  missingCheckout: boolean;
   overtimeHours: number;
   /** True if this date is the Fri/Sat weekend or an explicit Holiday row
    * (see the `holidays` module — Public Holidays / Non-Working Days). */
@@ -57,13 +72,19 @@ function parseShiftTime(dayDate: Date, hhmm: string): Date {
   return d;
 }
 
-/** Pairs chronological CHECK_IN/CHECK_OUT punches per calendar day into
- * worked sessions, subtracts any BREAK_IN/BREAK_OUT time from within them,
- * tracks OVERTIME_IN/OVERTIME_OUT as a separate punched-overtime duration,
- * and flags late arrival / early departure / overtime against the given
- * shift window (see shiftSettingsFor — resolved per staff member from their
- * StaffGroup). Unpaired trailing punches (still clocked in, or a missed
- * closing punch) are ignored for hours but don't crash the calculation.
+/** Payroll hours for a calendar day are simply its latest CHECK_OUT minus
+ * its earliest CHECK_IN (school policy: only Check In/Check Out count
+ * toward paid time). BREAK_IN/BREAK_OUT and OVERTIME_IN/OVERTIME_OUT are
+ * tracked separately purely for display (breakHours/otPunchedHours) and
+ * never affect hoursWorked — the attendance device can't reliably tell a
+ * real break from someone stepping out and back in, so treating a break
+ * punch as payroll-affecting would risk silently under-paying someone.
+ * Late arrival is flagged against the given shift window (see
+ * shiftSettingsFor — resolved per staff member from their StaffGroup).
+ * "Early leave"/"missing checkout" aren't about the shift window at all —
+ * they flag a day with only one half of the Check In/Check Out pair: a
+ * CHECK_IN with no CHECK_OUT (missingCheckout) or a CHECK_OUT with no
+ * CHECK_IN (earlyDeparture).
  *
  * BREAK_IN/BREAK_OUT (and similarly OVERTIME_IN/OVERTIME_OUT) are paired by
  * alternation — whichever of the pair appears first opens the interval, the
@@ -95,10 +116,8 @@ export function buildTimesheet(
   for (const [date, dayEntries] of [...byDay.entries()].sort()) {
     const sorted = [...dayEntries].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-    let hoursWorked = 0;
     let breakHours = 0;
     let otPunchedHours = 0;
-    let openIn: Date | null = null;
     let openBreakStart: Date | null = null;
     let openOtStart: Date | null = null;
     let firstIn: Date | null = null;
@@ -107,11 +126,8 @@ export function buildTimesheet(
     for (const punch of sorted) {
       if (punch.punchType === PunchType.CHECK_IN) {
         if (!firstIn) firstIn = punch.timestamp;
-        openIn = punch.timestamp;
-      } else if (punch.punchType === PunchType.CHECK_OUT && openIn) {
-        hoursWorked += (punch.timestamp.getTime() - openIn.getTime()) / 3600000;
+      } else if (punch.punchType === PunchType.CHECK_OUT) {
         lastOut = punch.timestamp;
-        openIn = null;
       } else if (punch.punchType === PunchType.BREAK_IN || punch.punchType === PunchType.BREAK_OUT) {
         if (!openBreakStart) {
           openBreakStart = punch.timestamp;
@@ -128,10 +144,16 @@ export function buildTimesheet(
         }
       }
     }
-    hoursWorked = Math.max(0, hoursWorked - breakHours);
+
+    // No CHECK_OUT at all that day — a missed final tap. hoursWorked stays
+    // 0 rather than guessing; missingCheckout tells the UI/reports why.
+    const missingCheckout = firstIn !== null && lastOut === null;
+    // Mirror case: a CHECK_OUT with no CHECK_IN that day.
+    const earlyDeparture = lastOut !== null && firstIn === null;
+    const hoursWorked =
+      firstIn && lastOut ? Math.max(0, (lastOut.getTime() - firstIn.getTime()) / 3600000) : 0;
 
     const shiftStart = parseShiftTime(sorted[0].timestamp, shift.shiftStart);
-    const shiftEnd = new Date(shiftStart.getTime() + shift.standardDailyHours * 3600000);
     const graceMs = env.gracePeriodMinutes * 60000;
     // Maldives weekend is Friday(5)/Saturday(6), not Saturday/Sunday.
     const dayOfWeek = sorted[0].timestamp.getDay();
@@ -142,12 +164,14 @@ export function buildTimesheet(
       date,
       firstIn: firstIn ? firstIn.toISOString() : null,
       lastOut: lastOut ? lastOut.toISOString() : null,
+      punches: sorted.map((p) => ({ timestamp: p.timestamp.toISOString(), punchType: p.punchType })),
       hoursWorked: Math.round(hoursWorked * 100) / 100,
       breakHours: Math.round(breakHours * 100) / 100,
       otPunchedHours: Math.round(otPunchedHours * 100) / 100,
       lateArrival,
       lateMinutes: lateArrival && firstIn ? Math.round((firstIn.getTime() - shiftStart.getTime()) / 60000) : 0,
-      earlyDeparture: lastOut ? lastOut.getTime() < shiftEnd.getTime() - graceMs : false,
+      missingCheckout,
+      earlyDeparture,
       overtimeHours: Math.max(0, Math.round((hoursWorked - shift.standardDailyHours) * 100) / 100),
       isHoliday,
       holidayAttendanceEligible: isHoliday && hoursWorked >= env.holidayAttendanceThresholdHours,

@@ -6,11 +6,13 @@ export interface DayTimesheet {
   date: string;
   firstIn: string | null;
   lastOut: string | null;
+  punches: { timestamp: string; punchType: PunchType }[];
   hoursWorked: number;
   breakHours: number;
   otPunchedHours: number;
   lateArrival: boolean;
   earlyDeparture: boolean;
+  missingCheckout: boolean;
   overtimeHours: number;
   holidayAttendanceEligible: boolean;
   overtimeEligible: boolean;

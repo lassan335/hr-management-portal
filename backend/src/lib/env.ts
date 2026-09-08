@@ -49,6 +49,16 @@ export const env = {
 
   zktimeWatchDir: process.env.ZKTIME_WATCH_DIR || "",
 
+  // Direct polling of a ZKTeco/ZKTime terminal on the LAN (as an alternative
+  // to dropping exports in the watch folder) — enabled whenever an IP is
+  // configured, unless explicitly turned off.
+  zktimeDevice: {
+    ip: process.env.ZKTIME_DEVICE_IP || "",
+    port: Number(process.env.ZKTIME_DEVICE_PORT ?? 4370),
+    pollIntervalMinutes: Number(process.env.ZKTIME_DEVICE_POLL_INTERVAL_MINUTES ?? 5),
+    enabled: Boolean(process.env.ZKTIME_DEVICE_IP) && process.env.ZKTIME_DEVICE_ENABLED !== "false",
+  },
+
   // Fallback shift window for staff not assigned to a StaffGroup — real
   // scheduling (sign-in time + working hours) comes from the staff's group
   // (see prisma schema's StaffGroup model), matching the legacy portal's

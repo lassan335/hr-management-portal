@@ -5,14 +5,16 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Matches the shared UI-kit reference: a bright sky-blue as the
+        // single dominant accent (buttons, links, active states).
         brand: {
-          50: "#eef7fd",
-          100: "#d9edfa",
-          400: "#5fb3e8",
-          500: "#2f8fd6",
-          600: "#1f6fb0",
-          700: "#1a5a8f",
-          900: "#123a5c",
+          50: "#f0f9ff",
+          100: "#e0f2fe",
+          400: "#38bdf8",
+          500: "#0ea5e9",
+          600: "#0284c7",
+          700: "#0369a1",
+          900: "#0c4a6e",
         },
       },
     },

@@ -101,13 +101,13 @@ export function Layout() {
           <button
             aria-label="Open menu"
             onClick={() => setDrawerOpen(true)}
-            className="md:hidden p-2 -ml-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            className="md:hidden p-2 -ml-2 rounded-lg text-brand-600 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-slate-800 shrink-0"
           >
             <Menu className="h-5 w-5" />
           </button>
 
           <div className="relative flex-1 max-w-sm hidden sm:block">
-            <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="h-4 w-4 text-brand-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               placeholder="Search…"
               className="w-full pl-9 pr-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500"
@@ -117,13 +117,13 @@ export function Layout() {
           <button
             onClick={toggle}
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            className="p-2 rounded-lg text-brand-600 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-slate-800 shrink-0"
           >
             {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </button>
           <button
             title="Notifications"
-            className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            className="p-2 rounded-lg text-brand-600 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-slate-800 shrink-0"
           >
             <Bell className="h-5 w-5" />
           </button>

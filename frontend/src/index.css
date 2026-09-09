@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 body {
-  @apply bg-slate-50 text-slate-900;
+  @apply bg-cream text-slate-900;
 }
 .dark body {
   background-color: theme("colors.slate.950");

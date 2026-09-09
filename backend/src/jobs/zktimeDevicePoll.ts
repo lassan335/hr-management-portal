@@ -16,26 +16,36 @@ import { importDevicePunchesBatched, ParsedPunch } from "./zktimeImport";
  * A 2026-09-09 investigation tried reading a byte at offset 31 of the raw
  * 40-byte attendance record, believing it to be a genuine device-reported
  * punch-type code (it does vary 0-5 across real records). Cross-checked
- * against an authoritative ZKTime 5.0 "State" export for the same day, that
- * byte disagreed with the real Check/Break/OT classification on ~45% of
- * staff — the real classification is evidently computed by the desktop
- * software's own session/schedule logic, not read from a fixed byte
- * position. Do not reintroduce raw-byte decoding without validating it
- * against a real export first.
+ * against an authoritative ZKTime 5.0 "State" export for one day, that byte
+ * disagreed with the real Check/Break/OT classification on ~45% of staff —
+ * the real classification is computed by the desktop software's own
+ * session/schedule logic, not read from a fixed byte position. Do not
+ * reintroduce raw-byte decoding without validating it against a real export
+ * first.
  *
- * The session/schedule model below replaced a purely positional guess
- * (first punch of the day = Check In, last = Check Out, everything between
- * alternates as Break) after the school confirmed its real shift windows:
- * Check In 6:00-8:00am, Check Out ~12:45pm, Overtime spans from Check Out
- * through the next Check In (so a late OT session that runs past midnight
- * correctly continues into the small hours rather than resetting at the
- * calendar-day boundary). Validated against the same 8 September export at
- * ~89% punch-level accuracy (up from ~55% for the old positional guess) —
- * the remaining gap is mostly a same-day back-to-back-break cooldown rule
- * and duplicate/glitch taps (two taps at the same minute) this model
- * doesn't attempt to replicate; see git history around 2026-09-09 for the
- * validation script and results. Re-validate against a fresh export before
- * changing this again.
+ * A session/schedule model (Check In 6-8am, Check Out >=12:45pm, OT session
+ * state carried indefinitely across midnight) replaced that, and looked
+ * good (~89%) against that same single day. It wasn't: cross-checked
+ * against the actual ZKTime 5.0 database's own already-classified punch log
+ * (CHECKINOUT.CHECKTYPE — confirmed authoritative: 'I'/'O' Check In/Out,
+ * '0'/'1' Break Out/In, lowercase 'i'/'o' Overtime In/Out) over 5 weeks and
+ * 46 staff, real accuracy was ~53%. Two problems the single day never
+ * exercised:
+ *   1. On a non-working day (Fri/Sat — see holidays/service.ts's weekend
+ *      rule), staff who come in only for OT have no Check In/Out at all
+ *      that day; every punch is OT. The old model always treated a day's
+ *      first punch as Check In.
+ *   2. Carrying state indefinitely across midnight means a single missed
+ *      or malformed punch on any one day desyncs every day after it for
+ *      that person, forever — a single-day test can't see this at all.
+ * Fixed by (1) treating every punch on a non-working day as Overtime
+ * in/out, and (2) resetting state at each calendar-day boundary instead of
+ * carrying it indefinitely — trading away genuine cross-midnight OT
+ * spanning (rare) for immunity to that cascade (not rare, and far more
+ * costly). Re-validated against the same 5-week/46-staff CHECKINOUT data:
+ * ~86% punch-level, 75% of individual days fully correct. Re-validate
+ * against a similarly large, real, multi-week sample (a single day is not
+ * sufficient — see above) before changing this again.
  */
 type SessionState = "BEFORE_CHECKIN" | "IN_SESSION" | "IN_OT_WINDOW";
 
@@ -47,6 +57,18 @@ function minutesOfDay(hhmm: string): number {
 const CHECKIN_WINDOW_START = minutesOfDay(env.zktimeDevice.checkinWindowStart);
 const CHECKIN_WINDOW_END = minutesOfDay(env.zktimeDevice.checkinWindowEnd);
 const CHECKOUT_THRESHOLD = minutesOfDay(env.zktimeDevice.checkoutTime);
+
+/** Sunday-Thursday, matching the same Maldives weekend rule used
+ * school-wide (see holidays/service.ts's resolveDayType) — Friday/Saturday
+ * are never a normal Check In/Out day here, only Overtime. */
+function isWorkingDay(date: Date): boolean {
+  const dayOfWeek = date.getDay();
+  return dayOfWeek >= 0 && dayOfWeek <= 4;
+}
+
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
 
 function toSessionPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
   const sorted = logs
@@ -63,22 +85,39 @@ function toSessionPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
 
   const punches: ParsedPunch[] = [];
   for (const logsForDevice of byDevice.values()) {
-    // Per-device-user state carries across the whole chronological run, not
-    // reset at midnight — an OT session opened before midnight and closed
-    // just after it must stay OT, not get reinterpreted as a new day.
+    // State resets at every calendar-day boundary (see this function's doc
+    // comment) — deliberately NOT carried indefinitely across days.
+    let currentDay: string | null = null;
     let state: SessionState = "BEFORE_CHECKIN";
     let onBreak = false;
     let otOpen = false;
 
     for (const log of logsForDevice) {
+      const key = dayKey(log.recordTime);
+      if (key !== currentDay) {
+        currentDay = key;
+        state = "BEFORE_CHECKIN";
+        onBreak = false;
+        otOpen = false;
+      }
+
+      const working = isWorkingDay(log.recordTime);
       const mins = log.recordTime.getHours() * 60 + log.recordTime.getMinutes();
-      const inCheckinWindow = mins >= CHECKIN_WINDOW_START && mins < CHECKIN_WINDOW_END;
+      const inCheckinWindow = working && mins >= CHECKIN_WINDOW_START && mins < CHECKIN_WINDOW_END;
       let punchType: PunchType;
 
       if (state === "BEFORE_CHECKIN") {
-        punchType = PunchType.CHECK_IN;
-        state = "IN_SESSION";
-        onBreak = false;
+        if (working) {
+          punchType = PunchType.CHECK_IN;
+          state = "IN_SESSION";
+          onBreak = false;
+        } else {
+          // Non-working day (Fri/Sat) — no normal session exists to open;
+          // every punch that day is Overtime.
+          punchType = PunchType.OVERTIME_IN;
+          state = "IN_OT_WINDOW";
+          otOpen = true;
+        }
       } else if (state === "IN_SESSION") {
         if (!onBreak) {
           if (mins >= CHECKOUT_THRESHOLD) {
@@ -94,11 +133,11 @@ function toSessionPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
           onBreak = false;
         }
       } else {
-        // IN_OT_WINDOW — a punch inside the Check-In window starts a fresh
-        // day even if an OT pair from the previous session never closed
-        // (matches the real export: an unclosed OT pair simply never gets
-        // its Out tap rather than blocking the next day's Check In).
-        if (inCheckinWindow && !otOpen) {
+        // IN_OT_WINDOW — a punch inside the Check-In window on a working
+        // day always starts a fresh session, even over a still-open OT
+        // pair (matches the real classification: an unclosed OT pair
+        // simply never gets its Out tap rather than blocking Check In).
+        if (inCheckinWindow) {
           punchType = PunchType.CHECK_IN;
           state = "IN_SESSION";
           onBreak = false;

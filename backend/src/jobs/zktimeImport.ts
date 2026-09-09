@@ -311,17 +311,19 @@ export async function importDevicePunchesBatched(
         select: { staffId: true, timestamp: true, punchType: true },
       })
     : [];
-  const seenTimeEntryKeys = new Set(
-    existingTimeEntries.map((e) => `${e.staffId}|${e.timestamp.getTime()}|${e.punchType}`)
-  );
+  // Keyed on (staff, instant) alone, deliberately NOT punchType — a single
+  // physical tap on the device is already recorded once it's been imported
+  // under any type, and must never be re-inserted just because a later poll
+  // would now decode its type differently (e.g. after fixing how the type
+  // byte itself is read). Re-typing already-imported history is a separate,
+  // deliberate decision, not something a routine re-poll should ever do.
+  const seenTimeEntryKeys = new Set(existingTimeEntries.map((e) => `${e.staffId}|${e.timestamp.getTime()}`));
 
   const existingUnmatched = await prisma.attendanceUnmatchedEntry.findMany({
     where: { deviceUserId: { in: uniqueDeviceUserIds } },
     select: { deviceUserId: true, timestamp: true, punchType: true },
   });
-  const seenUnmatchedKeys = new Set(
-    existingUnmatched.map((e) => `${e.deviceUserId}|${e.timestamp.getTime()}|${e.punchType}`)
-  );
+  const seenUnmatchedKeys = new Set(existingUnmatched.map((e) => `${e.deviceUserId}|${e.timestamp.getTime()}`));
 
   const timeEntriesToCreate: { staffId: string; timestamp: Date; punchType: PunchType; source: AttendanceSource }[] = [];
   const unmatchedToCreate: { syncLogId: string; deviceUserId: string; timestamp: Date; punchType: PunchType }[] = [];
@@ -330,7 +332,7 @@ export async function importDevicePunchesBatched(
   for (const punch of punches) {
     const staffId = staffIdByDeviceUserId.get(punch.deviceUserId);
     if (staffId) {
-      const key = `${staffId}|${punch.timestamp.getTime()}|${punch.punchType}`;
+      const key = `${staffId}|${punch.timestamp.getTime()}`;
       if (seenTimeEntryKeys.has(key)) continue;
       seenTimeEntryKeys.add(key); // also guards duplicate punches within this same poll
       timeEntriesToCreate.push({ staffId, timestamp: punch.timestamp, punchType: punch.punchType, source: opts.source });
@@ -339,7 +341,7 @@ export async function importDevicePunchesBatched(
         otTouchedDays.set(dayKey, { staffId, date: punch.timestamp });
       }
     } else {
-      const key = `${punch.deviceUserId}|${punch.timestamp.getTime()}|${punch.punchType}`;
+      const key = `${punch.deviceUserId}|${punch.timestamp.getTime()}`;
       if (seenUnmatchedKeys.has(key)) continue;
       seenUnmatchedKeys.add(key);
       unmatchedToCreate.push({

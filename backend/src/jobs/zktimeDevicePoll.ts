@@ -1,4 +1,6 @@
-import ZKLib, { ZKAttendanceRecord } from "node-zklib";
+import ZKLib from "node-zklib";
+import { REQUEST_DATA } from "node-zklib/constants";
+import { decodeRecordData40 } from "node-zklib/utils";
 import { AttendanceSource, NotificationType, PunchType, Role } from "@hr/shared";
 import { env } from "../lib/env";
 import { prisma } from "../lib/prisma";
@@ -6,57 +8,93 @@ import { recordAudit } from "../lib/audit";
 import { notify } from "../lib/notifications";
 import { importDevicePunchesBatched, ParsedPunch } from "./zktimeImport";
 
+interface RawAttendanceRecord {
+  deviceUserId: string;
+  recordTime: Date;
+  /** Firmware-standard punch-type code (see STATUS_CODE_TO_PUNCH_TYPE) —
+   * present in every raw 40-byte attendance record the device sends, but
+   * silently discarded by node-zklib's own decodeRecordData40 (it only
+   * reads userSn/deviceUserId/recordTime out of the buffer). Confirmed by
+   * reading the live device's raw bytes directly: byte offset 31 (right
+   * after the 4-byte recordTime at 27-31) holds an evenly-distributed 0-5
+   * value matching this exact convention, on every record — bytes 11-27 are
+   * always zero (unused in this firmware), so nothing else in the record
+   * carries this. */
+  statusCode: number;
+}
+
 /**
- * The device's TCP protocol has no punch-direction field (unlike a ZKTime
- * 5.0 CSV/xlsx export, which usually has a status column) and no "since last
- * sync" cursor — every poll re-reads the device's full in-memory log, and
- * importDevicePunchesBatched skips punches already recorded from an earlier
- * poll instead of re-inserting them every time.
- *
- * Direction/type is inferred from position within each device+day's
- * chronological sequence, the same way the real ZKTime 5.0 software's own
- * "Schedule Class" mechanism works (confirmed by reading its shipped SQL
- * schema — its raw punch table is *also* just a 2-state In/Out flag; Break
- * detection there is a calculated gap between sessions, not a device-
- * reported type either): the first punch of the day opens it (CHECK_IN),
- * the last one closes it (CHECK_OUT), and any punches in between are the
- * boundaries of a break (BREAK_OUT/BREAK_IN, alternating). A day with only
- * 2 punches behaves exactly as before (CHECK_IN, CHECK_OUT); a day with an
- * odd punch count ends on a BREAK_IN with no closing CHECK_OUT, correctly
- * surfacing as missingCheckout rather than being guessed at.
+ * Re-implements ZKLibTCP.getAttendances() (node_modules/node-zklib/zklibtcp.js)
+ * ourselves instead of calling it, purely to keep the status byte its own
+ * decoder throws away. `zk.zklibTcp` is the same internal transport instance
+ * getAttendances() would use — createSocket() must have already run so
+ * zk.connectionType is "tcp" (the only transport this app's device polling
+ * ever uses; UDP isn't wired up anywhere in this job).
  */
-function toAlternatingPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
+async function readRawAttendanceLogs(zk: ZKLib): Promise<RawAttendanceRecord[]> {
+  if (zk.connectionType !== "tcp") {
+    throw new Error(`unexpected_connection_type:${zk.connectionType}`);
+  }
+  const tcp = zk.zklibTcp;
+  if (tcp.socket) await tcp.freeData();
+  const data = await tcp.readWithBuffer(REQUEST_DATA.GET_ATTENDANCE_LOGS);
+  if (tcp.socket) await tcp.freeData();
+
+  const RECORD_PACKET_SIZE = 40;
+  let recordData = data.data.subarray(4);
+  const records: RawAttendanceRecord[] = [];
+  while (recordData.length >= RECORD_PACKET_SIZE) {
+    const chunk = recordData.subarray(0, RECORD_PACKET_SIZE);
+    const base = decodeRecordData40(chunk);
+    records.push({ deviceUserId: base.deviceUserId, recordTime: base.recordTime, statusCode: chunk.readUInt8(31) });
+    recordData = recordData.subarray(RECORD_PACKET_SIZE);
+  }
+  return records;
+}
+
+// Firmware-standard punch-type codes — matches the numeric convention
+// zktimeImport.ts's PUNCH_TYPE_VALUES already documents for ZKTime 5.0
+// CSV/xlsx exports' status column, since it's the same underlying firmware
+// convention either way.
+const STATUS_CODE_TO_PUNCH_TYPE: Record<number, PunchType> = {
+  0: PunchType.CHECK_IN,
+  1: PunchType.CHECK_OUT,
+  2: PunchType.BREAK_OUT,
+  3: PunchType.BREAK_IN,
+  4: PunchType.OVERTIME_IN,
+  5: PunchType.OVERTIME_OUT,
+};
+
+/**
+ * Maps each raw record's genuine device-reported punch type directly —
+ * no more guessing direction from position within the day (which
+ * mislabeled, e.g., a real trailing Break Out as a Check Out any time the
+ * matching Break In tap never came). An unrecognized status code (should
+ * never happen given the confirmed 0-5 range, but firmware is firmware)
+ * falls back to strict per-device-per-day alternation, same as
+ * zktimeImport.ts's own status-less fallback for bare punch-log exports.
+ */
+function toRealPunches(logs: RawAttendanceRecord[]): ParsedPunch[] {
   const sorted = logs
     // The device pads its log buffer with empty/sentinel rows
     // (deviceUserId: "", recordTime at its zero-date) — skip those.
     .filter((log) => log.deviceUserId && !isNaN(log.recordTime?.getTime?.()))
     .sort((a, b) => a.recordTime.getTime() - b.recordTime.getTime());
 
-  const dayGroups = new Map<string, ZKAttendanceRecord[]>();
-  for (const log of sorted) {
-    const dayKey = `${log.deviceUserId}:${log.recordTime.toISOString().slice(0, 10)}`;
-    if (!dayGroups.has(dayKey)) dayGroups.set(dayKey, []);
-    dayGroups.get(dayKey)!.push(log);
-  }
+  const fallbackIndexByDay = new Map<string, number>();
+  return sorted.map((log) => {
+    const punchType = STATUS_CODE_TO_PUNCH_TYPE[log.statusCode];
+    if (punchType) return { deviceUserId: log.deviceUserId, timestamp: log.recordTime, punchType };
 
-  const punches: ParsedPunch[] = [];
-  for (const group of dayGroups.values()) {
-    group.forEach((log, i) => {
-      const isLast = i === group.length - 1;
-      let punchType: PunchType;
-      if (i === 0) {
-        punchType = PunchType.CHECK_IN;
-      } else if (i % 2 === 1) {
-        // An "out" position — closes the day if nothing follows, otherwise opens a break.
-        punchType = isLast ? PunchType.CHECK_OUT : PunchType.BREAK_OUT;
-      } else {
-        // An "in" position after the first punch is always a return from break.
-        punchType = PunchType.BREAK_IN;
-      }
-      punches.push({ deviceUserId: log.deviceUserId, timestamp: log.recordTime, punchType });
-    });
-  }
-  return punches;
+    const dayKey = `${log.deviceUserId}:${log.recordTime.toISOString().slice(0, 10)}`;
+    const idx = fallbackIndexByDay.get(dayKey) ?? 0;
+    fallbackIndexByDay.set(dayKey, idx + 1);
+    return {
+      deviceUserId: log.deviceUserId,
+      timestamp: log.recordTime,
+      punchType: idx % 2 === 0 ? PunchType.CHECK_IN : PunchType.CHECK_OUT,
+    };
+  });
 }
 
 let polling = false;
@@ -67,8 +105,8 @@ async function pollOnce() {
   const zk = new ZKLib(env.zktimeDevice.ip, env.zktimeDevice.port, 10000, 4000);
   try {
     await zk.createSocket();
-    const { data: logs } = await zk.getAttendances();
-    const punches = toAlternatingPunches(logs);
+    const logs = await readRawAttendanceLogs(zk);
+    const punches = toRealPunches(logs);
     if (punches.length === 0) {
       console.log(`[zktime-device] Polled ${env.zktimeDevice.ip}: no punches on device.`);
       return;

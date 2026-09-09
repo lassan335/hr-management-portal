@@ -32,9 +32,12 @@ app.use(
   })
 );
 // In development, also allow the same frontend reached over the local
-// network (e.g. from a phone on the same Wi-Fi) — production still only
+// network (e.g. from a phone on the same Wi-Fi) or via 127.0.0.1 instead of
+// "localhost" (a common alternate way to open the same dev server, but a
+// different cookie "site" — without this, the login cookie set for one
+// silently never gets sent back to the other) — production still only
 // ever allows the single configured FRONTEND_ORIGIN.
-const devLanOrigin = /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:5173$/;
+const devLanOrigin = /^http:\/\/(192\.168\.\d{1,3}\.\d{1,3}|127\.0\.0\.1|localhost):5173$/;
 app.use(
   cors({
     origin:

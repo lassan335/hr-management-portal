@@ -135,7 +135,10 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
 
   const [staffList, holidayRows] = await Promise.all([
     prisma.staff.findMany({
-      where: deptId ? { departmentId: deptId } : {},
+      // Resigned/terminated staff have no reason to appear on a "who
+      // worked" roster — their attendance history stays intact, just
+      // excluded from active-staff views like this one.
+      where: { status: "ACTIVE", ...(deptId ? { departmentId: deptId } : {}) },
       select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true, category: true },
       orderBy: { staffId: "asc" },
     }),
@@ -186,7 +189,9 @@ export async function getDailyAttendance(requester: AuthUser, departmentId: stri
 
   const [staffList, holidayRows] = await Promise.all([
     prisma.staff.findMany({
-      where: deptId ? { departmentId: deptId } : {},
+      // Same reasoning as getDepartmentDashboard — resigned/terminated
+      // staff are excluded from this roster, not deleted.
+      where: { status: "ACTIVE", ...(deptId ? { departmentId: deptId } : {}) },
       select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true, category: true },
       orderBy: { staffId: "asc" },
     }),
@@ -328,7 +333,10 @@ export async function attendanceEligibleListExcel(
 
   const [staffList, holidayRows] = await Promise.all([
     prisma.staff.findMany({
-      where: deptId ? { departmentId: deptId } : {},
+      // Same reasoning as getDepartmentDashboard/getDailyAttendance —
+      // resigned/terminated staff earned no attendance allowance this
+      // period if they're gone, so they're excluded from this report.
+      where: { status: "ACTIVE", ...(deptId ? { departmentId: deptId } : {}) },
       select: { id: true, fullName: true, staffId: true, designation: true, nationalIdEnc: true, category: true, staffGroup: true },
       orderBy: { staffId: "asc" },
     }),

@@ -144,5 +144,17 @@ export function overtimeRouter(): Router {
     })
   );
 
+  router.get(
+    "/report/individual",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = dashboardQuerySchema.parse(req.query);
+      const xlsx = await service.individualOtDetailsExcel(req.user!, query.departmentId, query.month, query.year);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", 'attachment; filename="individual-staff-ot-details.xlsx"');
+      res.send(xlsx);
+    })
+  );
+
   return router;
 }

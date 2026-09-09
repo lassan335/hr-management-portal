@@ -418,6 +418,9 @@ function DashboardCard({ month, year }: { month: number; year: number }) {
           <a href={overtimeApi.reportUrl(month, year, undefined, "pdf")} className="text-xs text-brand-600 hover:underline">
             PDF
           </a>
+          <a href={overtimeApi.individualReportUrl(month, year)} className="text-xs text-brand-600 hover:underline">
+            Individual Staff OT Details (Excel)
+          </a>
         </span>
       </div>
       <p className="text-xs text-slate-400 mb-3 border-b border-slate-100 pb-3">

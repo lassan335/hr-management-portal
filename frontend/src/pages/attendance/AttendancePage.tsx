@@ -149,6 +149,12 @@ function DepartmentDashboard({ from, to }: { from: string; to: string }) {
           <a href={attendanceApi.reportUrl(from, to, undefined, "pdf")} className="text-xs text-brand-600 hover:underline">
             PDF
           </a>
+          <a
+            href={attendanceApi.eligibleListUrl(new Date(to).getMonth() + 1, new Date(to).getFullYear())}
+            className="text-xs text-brand-600 hover:underline"
+          >
+            Attendance Eligible List (Excel)
+          </a>
         </span>
       </div>
       <div className="overflow-x-auto">

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import ExcelJS from "exceljs";
 import { AuthUser, NotificationType, PunchType, Role } from "@hr/shared";
 import { prisma } from "../../lib/prisma";
 import { canAccessStaffRecord } from "../../lib/rbac";
@@ -7,13 +8,16 @@ import { recordAudit } from "../../lib/audit";
 import { notify } from "../../lib/notifications";
 import { HttpError } from "../../lib/errors";
 import { nextApprovalStatus } from "../../lib/approvalChain";
-import { endOfUtcDay } from "../../lib/dateRange";
+import { endOfUtcDay, payPeriodRange } from "../../lib/dateRange";
 import { buildTablePdf } from "../../lib/pdf";
 import { buildReportExcel } from "../../lib/reportExcel";
+import { formatHmOrDash } from "../../lib/hoursFormat";
+import { decryptField } from "../../lib/encryption";
+import { env } from "../../lib/env";
 import { processZKTimeFile } from "../../jobs/zktimeImport";
-import { holidayTypeMap, listHolidays, holidayTypeMapForCategory } from "../holidays/service";
+import { holidayTypeMap, listHolidays, holidayTypeMapForCategory, resolveDayType } from "../holidays/service";
 import { buildTimesheet, shiftSettingsFor } from "./timesheet";
-import { reconcileOvertimeCompletion } from "../overtime/service";
+import { reconcileOvertimeCompletion, otRateInfoForStaffIds } from "../overtime/service";
 import type { correctionSchema } from "./validation";
 import type { z } from "zod";
 
@@ -218,6 +222,178 @@ export async function attendanceReportExcel(requester: AuthUser, departmentId: s
       overtimeHours: Math.round(rows.reduce((s, r) => s + r.overtimeHours, 0) * 100) / 100,
     },
   });
+}
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function payPeriodLabel(month: number, year: number): string {
+  const { from, to } = payPeriodRange(month, year, env.otPeriodStartDay);
+  const fmt = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  return `${fmt(from)} to ${fmt(to)}`;
+}
+
+/**
+ * Attendance Eligible List — a day-by-day matrix for the OT pay period,
+ * with one "Hrs"/"Eligible" column pair per non-working day/declared
+ * holiday in the period (never an ordinary working day — attendance
+ * allowance eligibility only exists on those, see timesheet.ts's
+ * holidayAttendanceEligible), plus two trailing per-staff summary counts.
+ * Matches the legacy portal's export.
+ *
+ * The column set (which calendar dates get a pair) is the union of both
+ * staff categories' non-working days, so every staff row shares the same
+ * columns — a date that isn't actually a day off for a given staff
+ * member's own category (e.g. a Teaching-only calendar entry, for a
+ * Non-Teaching row) just shows "-"/"-" in their row instead of being
+ * omitted from the sheet.
+ */
+export async function attendanceEligibleListExcel(
+  requester: AuthUser,
+  departmentId: string | undefined,
+  month: number,
+  year: number
+): Promise<Buffer> {
+  let deptId = departmentId;
+  if (requester.role === Role.HOD) {
+    deptId = requester.departmentId ?? "__none__";
+  } else if (requester.role !== Role.HR_ADMIN) {
+    throw new HttpError(403, "forbidden");
+  }
+
+  const { from, to } = payPeriodRange(month, year, env.otPeriodStartDay);
+
+  const [staffList, holidayRows] = await Promise.all([
+    prisma.staff.findMany({
+      where: deptId ? { departmentId: deptId } : {},
+      select: { id: true, fullName: true, staffId: true, designation: true, nationalIdEnc: true, category: true, staffGroup: true },
+      orderBy: { staffId: "asc" },
+    }),
+    listHolidays(from, to),
+  ]);
+  const rateMap = await otRateInfoForStaffIds(staffList.map((s) => s.id));
+
+  const teachingTypeMap = holidayTypeMapForCategory(holidayRows, "TEACHING");
+  const nonTeachingTypeMap = holidayTypeMapForCategory(holidayRows, "NON_TEACHING");
+  const columnDates: { key: string; label: string; isWeekend: boolean }[] = [];
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    const isNonWorkingAnyCategory = resolveDayType(d, teachingTypeMap) !== null || resolveDayType(d, nonTeachingTypeMap) !== null;
+    if (!isNonWorkingAnyCategory) continue;
+    const dow = d.getDay();
+    columnDates.push({
+      key: d.toISOString().slice(0, 10),
+      label: `${String(d.getDate()).padStart(2, "0")} ${MONTH_ABBR[d.getMonth()]} (${DAY_ABBR[dow]})`,
+      isWeekend: dow === 5 || dow === 6,
+    });
+  }
+
+  const LEAD_COLS = 5; // #, NID, Staff Name, Designation, Basic Salary
+  const TRAILING_BASE = LEAD_COLS + columnDates.length * 2;
+  const TOTAL_COLS = TRAILING_BASE + 2;
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Attendance Eligible List");
+  sheet.columns = [
+    { width: 5 },
+    { width: 14 },
+    { width: 22 },
+    { width: 20 },
+    { width: 12 },
+    ...columnDates.flatMap(() => [{ width: 8 }, { width: 9 }]),
+    { width: 16 },
+    { width: 16 },
+  ];
+
+  function mergedRow(text: string, opts: { bold?: boolean; size?: number } = {}) {
+    const row = sheet.addRow([text]);
+    sheet.mergeCells(row.number, 1, row.number, TOTAL_COLS);
+    row.font = { bold: opts.bold ?? true, size: opts.size ?? 11 };
+    return row;
+  }
+
+  mergedRow(`Attendance Eligible List _ ${payPeriodLabel(month, year)}`, { size: 14 });
+  sheet.addRow([]);
+
+  const headerRow1Values: (string | number)[] = new Array(TOTAL_COLS).fill("");
+  const headerRow2Values: (string | number)[] = new Array(TOTAL_COLS).fill("");
+  headerRow2Values[0] = "#";
+  headerRow2Values[1] = "NID";
+  headerRow2Values[2] = "Staff Name";
+  headerRow2Values[3] = "Designation";
+  headerRow2Values[4] = "Basic Salary";
+  columnDates.forEach((c, j) => {
+    const base = LEAD_COLS + j * 2;
+    headerRow1Values[base] = c.label;
+    headerRow2Values[base] = "Hrs";
+    headerRow2Values[base + 1] = "Eligible";
+  });
+  headerRow1Values[TRAILING_BASE] = "Eligible Non-Working Days";
+  headerRow1Values[TRAILING_BASE + 1] = "Eligible Holidays";
+
+  const headerRow1 = sheet.addRow(headerRow1Values);
+  const headerRow2 = sheet.addRow(headerRow2Values);
+  [headerRow1, headerRow2].forEach((r) => {
+    r.font = { bold: true };
+    r.eachCell((cell) => {
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
+    });
+  });
+  for (let c = 1; c <= LEAD_COLS; c++) {
+    sheet.mergeCells(headerRow1.number, c, headerRow2.number, c);
+  }
+  columnDates.forEach((_c, j) => {
+    const col1Indexed = LEAD_COLS + j * 2 + 1;
+    sheet.mergeCells(headerRow1.number, col1Indexed, headerRow1.number, col1Indexed + 1);
+  });
+  sheet.mergeCells(headerRow1.number, TRAILING_BASE + 1, headerRow2.number, TRAILING_BASE + 1);
+  sheet.mergeCells(headerRow1.number, TRAILING_BASE + 2, headerRow2.number, TRAILING_BASE + 2);
+
+  const rows = await Promise.all(
+    staffList.map(async (s, idx) => {
+      const staffTypeMap = holidayTypeMapForCategory(holidayRows, s.category);
+      const entries = await prisma.timeEntry.findMany({
+        where: { staffId: s.id, timestamp: { gte: from, lte: endOfUtcDay(to) } },
+        orderBy: { timestamp: "asc" },
+      });
+      const days = buildTimesheet(entries, shiftSettingsFor(s.staffGroup), staffTypeMap);
+      const dayByDate = new Map(days.map((d) => [d.date, d]));
+
+      let eligibleNonWorking = 0;
+      let eligibleHolidays = 0;
+      const rowValues: (string | number)[] = new Array(TOTAL_COLS).fill("");
+      rowValues[0] = idx + 1;
+      rowValues[1] = decryptField(s.nationalIdEnc);
+      rowValues[2] = s.fullName;
+      rowValues[3] = s.designation;
+      rowValues[4] = rateMap.get(s.id)?.basicSalary ?? "";
+
+      columnDates.forEach((c, j) => {
+        const base = LEAD_COLS + j * 2;
+        const appliesToThisStaff = resolveDayType(new Date(c.key), staffTypeMap) !== null;
+        if (!appliesToThisStaff) {
+          rowValues[base] = "-";
+          rowValues[base + 1] = "-";
+          return;
+        }
+        const hoursWorked = dayByDate.get(c.key)?.hoursWorked ?? 0;
+        const eligible = hoursWorked >= env.holidayAttendanceThresholdHours;
+        rowValues[base] = formatHmOrDash(hoursWorked);
+        rowValues[base + 1] = eligible ? "YES" : "-";
+        if (eligible) {
+          if (c.isWeekend) eligibleNonWorking += 1;
+          else eligibleHolidays += 1;
+        }
+      });
+
+      rowValues[TRAILING_BASE] = eligibleNonWorking;
+      rowValues[TRAILING_BASE + 1] = eligibleHolidays;
+      return rowValues;
+    })
+  );
+
+  for (const rowValues of rows) sheet.addRow(rowValues);
+
+  return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
 export async function importFile(actor: AuthUser, filePath: string, meta: AuditMeta = {}) {

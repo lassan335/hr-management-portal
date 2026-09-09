@@ -12,6 +12,7 @@ import {
   timesheetQuerySchema,
   dashboardQuerySchema,
   reportQuerySchema,
+  eligibleListQuerySchema,
   resolveUnmatchedSchema,
   correctionSchema,
   reviewSchema,
@@ -115,6 +116,18 @@ export function attendanceRouter(): Router {
       const xlsx = await service.attendanceReportExcel(req.user!, query.departmentId, query.from, query.to);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", 'attachment; filename="attendance-report.xlsx"');
+      res.send(xlsx);
+    })
+  );
+
+  router.get(
+    "/eligible-list",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = eligibleListQuerySchema.parse(req.query);
+      const xlsx = await service.attendanceEligibleListExcel(req.user!, query.departmentId, query.month, query.year);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", 'attachment; filename="attendance-eligible-list.xlsx"');
       res.send(xlsx);
     })
   );

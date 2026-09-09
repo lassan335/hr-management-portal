@@ -22,6 +22,14 @@ export const reportQuerySchema = dashboardQuerySchema.extend({
   format: z.enum(["pdf", "excel"]).optional().default("excel"),
 });
 
+// Attendance Eligible List follows the same 16th-15th OT pay period as the
+// overtime reports (month/year), not an arbitrary from/to range.
+export const eligibleListQuerySchema = z.object({
+  departmentId: z.string().optional(),
+  month: z.coerce.number().int().min(1).max(12),
+  year: z.coerce.number().int().min(2000),
+});
+
 export const resolveUnmatchedSchema = z.object({
   staffId: z.string().min(1),
 });

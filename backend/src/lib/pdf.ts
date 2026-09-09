@@ -18,7 +18,12 @@ export function buildTablePdf(params: {
   landscape?: boolean;
 }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: "A4", layout: params.landscape ? "landscape" : "portrait" });
+    const doc = new PDFDocument({
+      margin: 40,
+      size: "A4",
+      layout: params.landscape ? "landscape" : "portrait",
+      bufferPages: true,
+    });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk) => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
@@ -75,6 +80,20 @@ export function buildTablePdf(params: {
         doc.text(`Name: ${block.name ?? "_______________________"}`, x, y + 20, { width: blockWidth - 10 });
         doc.text(`${block.label}${block.designation ? `: ${block.designation}` : ""}`, x, y + 36, { width: blockWidth - 10 });
       });
+    }
+
+    // bufferPages:true holds every page in memory instead of flushing it
+    // immediately, so a page number ("Page N of M") can be stamped on each
+    // one after the total is known — matches the legacy portal's printed
+    // report footers.
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      doc.fontSize(8).fillColor("#888888").text(`Page ${i + 1} of ${range.count}`, doc.page.margins.left, doc.page.height - 30, {
+        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+        align: "center",
+      });
+      doc.fillColor("#000000");
     }
 
     doc.end();

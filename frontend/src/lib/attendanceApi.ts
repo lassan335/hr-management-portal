@@ -79,6 +79,12 @@ export const attendanceApi = {
     const params = new URLSearchParams({ from, to, format, ...(departmentId ? { departmentId } : {}) });
     return `${API_URL}/api/attendance/report?${params.toString()}`;
   },
+  /** Attendance Eligible List — day-by-day non-working-day/holiday matrix
+   * for the OT pay period (16th-15th), Excel only. */
+  eligibleListUrl: (month: number, year: number, departmentId?: string) => {
+    const params = new URLSearchParams({ month: String(month), year: String(year), ...(departmentId ? { departmentId } : {}) });
+    return `${API_URL}/api/attendance/eligible-list?${params.toString()}`;
+  },
   syncLogs: () => api.get<SyncLogEntry[]>("/api/attendance/sync-log"),
   unmatched: () => api.get<UnmatchedEntry[]>("/api/attendance/unmatched"),
   resolveUnmatched: (deviceUserId: string, staffId: string) =>

@@ -131,4 +131,10 @@ export const overtimeApi = {
     const params = new URLSearchParams({ month: String(month), year: String(year), format, ...(departmentId ? { departmentId } : {}) });
     return `${API_URL}/api/overtime/report?${params.toString()}`;
   },
+  /** Individual Staff OT Details Sheet — one block per staff (header +
+   * one row per payable OT slot for the period), Excel only. */
+  individualReportUrl: (month: number, year: number, departmentId?: string) => {
+    const params = new URLSearchParams({ month: String(month), year: String(year), ...(departmentId ? { departmentId } : {}) });
+    return `${API_URL}/api/overtime/report/individual?${params.toString()}`;
+  },
 };

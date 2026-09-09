@@ -83,20 +83,30 @@ async function pollOnce() {
     );
   } catch (err) {
     console.error("[zktime-device] Poll failed:", err);
-    await recordAudit({
-      actorId: null,
-      action: "ATTENDANCE_DEVICE_POLL_FAILED",
-      entity: "AttendanceSyncLog",
-      entityId: env.zktimeDevice.ip,
-      after: { error: (err as Error).message },
-    });
-    const hrAdmins = await prisma.staff.findMany({ where: { role: Role.HR_ADMIN }, select: { id: true } });
-    for (const hr of hrAdmins) {
-      await notify({
-        staffId: hr.id,
-        type: NotificationType.ATTENDANCE_IMPORT_FAILED,
-        message: `ZKTime device poll failed (${env.zktimeDevice.ip}): ${(err as Error).message}`,
+    // Reporting the failure (audit log + HR notification) needs the same
+    // database the poll itself just failed to reach — e.g. the DB was
+    // transiently unreachable (a paused Supabase project waking up). That
+    // must never throw past this catch: an uncaught rejection here would
+    // crash the whole server over what's otherwise a one-off missed poll
+    // that the next interval will just retry.
+    try {
+      await recordAudit({
+        actorId: null,
+        action: "ATTENDANCE_DEVICE_POLL_FAILED",
+        entity: "AttendanceSyncLog",
+        entityId: env.zktimeDevice.ip,
+        after: { error: (err as Error).message },
       });
+      const hrAdmins = await prisma.staff.findMany({ where: { role: Role.HR_ADMIN }, select: { id: true } });
+      for (const hr of hrAdmins) {
+        await notify({
+          staffId: hr.id,
+          type: NotificationType.ATTENDANCE_IMPORT_FAILED,
+          message: `ZKTime device poll failed (${env.zktimeDevice.ip}): ${(err as Error).message}`,
+        });
+      }
+    } catch (reportingErr) {
+      console.error("[zktime-device] Also failed to record/report the poll failure:", reportingErr);
     }
   } finally {
     try {

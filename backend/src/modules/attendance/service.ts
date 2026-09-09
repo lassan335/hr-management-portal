@@ -167,6 +167,69 @@ export async function getDepartmentDashboard(requester: AuthUser, departmentId: 
   return rows;
 }
 
+/**
+ * One row per staff member for a single calendar day — HR_ADMIN (school-
+ * wide) or HOD (own department only), same scoping as getDepartmentDashboard.
+ * Unlike that function (which only aggregates counts over a range), this
+ * returns full punch-level detail per person, including staff who didn't
+ * punch at all that day (present: false, no punches) — buildTimesheet only
+ * ever returns a day for someone who has at least one entry, so absent
+ * staff need their holiday/type resolved independently via resolveDayType.
+ */
+export async function getDailyAttendance(requester: AuthUser, departmentId: string | undefined, date: Date) {
+  let deptId = departmentId;
+  if (requester.role === Role.HOD) {
+    deptId = requester.departmentId ?? "__none__";
+  } else if (requester.role !== Role.HR_ADMIN) {
+    throw new HttpError(403, "forbidden");
+  }
+
+  const [staffList, holidayRows] = await Promise.all([
+    prisma.staff.findMany({
+      where: deptId ? { departmentId: deptId } : {},
+      select: { id: true, fullName: true, staffId: true, designation: true, staffGroup: true, category: true },
+      orderBy: { staffId: "asc" },
+    }),
+    listHolidays(date, date),
+  ]);
+
+  const rows = await Promise.all(
+    staffList.map(async (s) => {
+      const entries = await prisma.timeEntry.findMany({
+        where: { staffId: s.id, timestamp: { gte: date, lte: endOfUtcDay(date) } },
+        orderBy: { timestamp: "asc" },
+      });
+      const holidayTypes = holidayTypeMapForCategory(holidayRows, s.category);
+      const day = buildTimesheet(entries, shiftSettingsFor(s.staffGroup), holidayTypes)[0] ?? null;
+      const holidayType = day?.holidayType ?? resolveDayType(date, holidayTypes);
+
+      return {
+        staffId: s.id,
+        staffCode: s.staffId,
+        fullName: s.fullName,
+        designation: s.designation,
+        present: !!(day?.firstIn || day?.lastOut),
+        firstIn: day?.firstIn ?? null,
+        lastOut: day?.lastOut ?? null,
+        punches: day?.punches ?? [],
+        hoursWorked: day?.hoursWorked ?? 0,
+        breakHours: day?.breakHours ?? 0,
+        otPunchedHours: day?.otPunchedHours ?? 0,
+        lateArrival: day?.lateArrival ?? false,
+        missingCheckout: day?.missingCheckout ?? false,
+        earlyDeparture: day?.earlyDeparture ?? false,
+        overtimeHours: day?.overtimeHours ?? 0,
+        isHoliday: holidayType !== null,
+        holidayType,
+        holidayAttendanceEligible: day?.holidayAttendanceEligible ?? false,
+        overtimeEligible: day?.overtimeEligible ?? false,
+      };
+    })
+  );
+
+  return rows;
+}
+
 function attendancePeriodLabel(from: Date, to: Date): string {
   const fmt = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
   return `${fmt(from)} to ${fmt(to)}`;

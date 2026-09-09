@@ -5,6 +5,7 @@ import { attendanceApi, uploadZktimeFile } from "../../lib/attendanceApi";
 import type {
   DayTimesheet,
   DashboardRow,
+  DailyAttendanceRow,
   SyncLogEntry,
   UnmatchedEntry,
   CorrectionRequest,
@@ -42,6 +43,7 @@ export function AttendancePage() {
 
       <MyTimesheet from={from} to={to} />
 
+      {user?.role === Role.HR_ADMIN && <DailyAttendanceSection />}
       {(user?.role === Role.HOD || user?.role === Role.HR_ADMIN) && <DepartmentDashboard from={from} to={to} />}
       <CorrectionsSection />
       {user?.role === Role.HR_ADMIN && <ZktimeImportSection />}
@@ -127,6 +129,91 @@ function TimesheetTable({ days }: { days: DayTimesheet[] }) {
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** School-wide, one row per staff, for a single selected day (default
+ * today) — HR_ADMIN only. Full punch-level detail (Check In/Out, Break, OT,
+ * flags), not just the aggregated counts DepartmentDashboard shows over a
+ * range. */
+function DailyAttendanceSection() {
+  const [date, setDate] = useState(today());
+  const [rows, setRows] = useState<DailyAttendanceRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    attendanceApi
+      .daily(date)
+      .then(setRows)
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [date]);
+
+  const presentCount = rows.filter((r) => r.present).length;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-medium text-slate-700">Daily Attendance — All Staff</h2>
+        <label className="flex items-center gap-2 text-xs">
+          Date
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+      </div>
+      <p className="text-xs text-slate-400 mb-3">
+        {loading ? "Loading…" : `${presentCount} of ${rows.length} staff present${rows[0]?.isHoliday ? ` — ${rows[0].holidayType === "PUBLIC" ? "Public" : "Government"} Holiday` : ""}`}
+      </p>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-left text-slate-500">
+            <tr>
+              <th className="px-2 py-1">Staff</th>
+              <th className="px-2 py-1">Designation</th>
+              <th className="px-2 py-1">Check In</th>
+              <th className="px-2 py-1">Check Out</th>
+              <th className="px-2 py-1">Break In</th>
+              <th className="px-2 py-1">Break Out</th>
+              <th className="px-2 py-1">OT In</th>
+              <th className="px-2 py-1">OT Out</th>
+              <th className="px-2 py-1">Hours</th>
+              <th className="px-2 py-1">Present</th>
+              <th className="px-2 py-1">Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.staffId} className="border-t border-slate-100 align-top">
+                <td className="px-2 py-1">{r.fullName} ({r.staffCode})</td>
+                <td className="px-2 py-1">{r.designation}</td>
+                <td className="px-2 py-1">{r.firstIn ? new Date(r.firstIn).toLocaleTimeString() : "—"}</td>
+                <td className="px-2 py-1">{r.lastOut ? new Date(r.lastOut).toLocaleTimeString() : "—"}</td>
+                <td className="px-2 py-1">{punchTime(r.punches, "BREAK_IN", "first")}</td>
+                <td className="px-2 py-1">{punchTime(r.punches, "BREAK_OUT", "last")}</td>
+                <td className="px-2 py-1">{punchTime(r.punches, "OVERTIME_IN", "first")}</td>
+                <td className="px-2 py-1">{punchTime(r.punches, "OVERTIME_OUT", "last")}</td>
+                <td className="px-2 py-1">{r.hoursWorked}</td>
+                <td className="px-2 py-1">
+                  {r.present ? <Badge tone="green">Present</Badge> : <Badge tone="red">Absent</Badge>}
+                </td>
+                <td className="px-2 py-1 space-x-1 space-y-1">
+                  {r.lateArrival && <Badge tone="amber">Late</Badge>}
+                  {r.missingCheckout && <Badge tone="amber">Missing checkout</Badge>}
+                  {r.earlyDeparture && <Badge tone="amber">Early leave</Badge>}
+                  {r.isHoliday && <Badge tone="slate">{r.holidayType === "PUBLIC" ? "Public Holiday" : "Government Holiday"}</Badge>}
+                  {r.overtimeHours > 0 && <Badge tone="green">+{r.overtimeHours}h OT</Badge>}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr>
+                <td colSpan={11} className="text-slate-400 px-2 py-2">No staff found.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

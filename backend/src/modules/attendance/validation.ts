@@ -22,6 +22,12 @@ export const reportQuerySchema = dashboardQuerySchema.extend({
   format: z.enum(["pdf", "excel"]).optional().default("excel"),
 });
 
+// One row per staff for a single calendar day — see getDailyAttendance().
+export const dailyAttendanceQuerySchema = z.object({
+  departmentId: z.string().optional(),
+  date: z.coerce.date(),
+});
+
 // Attendance Eligible List follows the same 16th-15th OT pay period as the
 // overtime reports (month/year), not an arbitrary from/to range.
 export const eligibleListQuerySchema = z.object({

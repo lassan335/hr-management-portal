@@ -13,6 +13,7 @@ import {
   dashboardQuerySchema,
   reportQuerySchema,
   eligibleListQuerySchema,
+  dailyAttendanceQuerySchema,
   resolveUnmatchedSchema,
   correctionSchema,
   reviewSchema,
@@ -99,6 +100,17 @@ export function attendanceRouter(): Router {
     asyncHandler(async (req, res) => {
       const query = dashboardQuerySchema.parse(req.query);
       res.json(await service.getDepartmentDashboard(req.user!, query.departmentId, query.from, query.to));
+    })
+  );
+
+  // One row per staff for a single day (Check In/Out, Break, OT, flags) —
+  // HR_ADMIN school-wide or HOD scoped to their own department.
+  router.get(
+    "/daily",
+    requireRole(Role.HOD, Role.HR_ADMIN),
+    asyncHandler(async (req, res) => {
+      const query = dailyAttendanceQuerySchema.parse(req.query);
+      res.json(await service.getDailyAttendance(req.user!, query.departmentId, query.date));
     })
   );
 

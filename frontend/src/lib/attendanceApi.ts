@@ -28,6 +28,28 @@ export interface DashboardRow {
   overtimeHours: number;
 }
 
+export interface DailyAttendanceRow {
+  staffId: string;
+  staffCode: string;
+  fullName: string;
+  designation: string;
+  present: boolean;
+  firstIn: string | null;
+  lastOut: string | null;
+  punches: { timestamp: string; punchType: PunchType }[];
+  hoursWorked: number;
+  breakHours: number;
+  otPunchedHours: number;
+  lateArrival: boolean;
+  missingCheckout: boolean;
+  earlyDeparture: boolean;
+  overtimeHours: number;
+  isHoliday: boolean;
+  holidayType: "GOVERNMENT" | "PUBLIC" | null;
+  holidayAttendanceEligible: boolean;
+  overtimeEligible: boolean;
+}
+
 export interface SyncLogEntry {
   id: string;
   fileName: string;
@@ -73,6 +95,12 @@ export const attendanceApi = {
   dashboard: (from: string, to: string, departmentId?: string) => {
     const params = new URLSearchParams({ from, to, ...(departmentId ? { departmentId } : {}) });
     return api.get<DashboardRow[]>(`/api/attendance/dashboard?${params.toString()}`);
+  },
+  /** One row per staff for a single day — HR_ADMIN school-wide, or HOD
+   * scoped to their own department. */
+  daily: (date: string, departmentId?: string) => {
+    const params = new URLSearchParams({ date, ...(departmentId ? { departmentId } : {}) });
+    return api.get<DailyAttendanceRow[]>(`/api/attendance/daily?${params.toString()}`);
   },
   /** School-wide attendance report — Excel by default (one row per staff), PDF option. */
   reportUrl: (from: string, to: string, departmentId: string | undefined, format: "excel" | "pdf" = "excel") => {

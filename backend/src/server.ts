@@ -56,7 +56,18 @@ app.use(passport.initialize());
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, env: env.nodeEnv }));
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // The dev-only bypass login is hit repeatedly while iterating locally
+  // (switching test accounts, retrying after a fix) — it's unreachable
+  // outside development anyway (see isDevBypassAuthActive), so the real
+  // brute-force protection this limiter exists for doesn't apply to it.
+  // Real OAuth endpoints stay rate-limited even in development.
+  skip: (req) => env.nodeEnv === "development" && req.path === "/dev-login",
+});
 app.use("/api/auth", authLimiter, authRouter());
 app.use("/api/files", filesRouter());
 app.use("/api/staff", staffRouter());

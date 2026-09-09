@@ -14,14 +14,20 @@ export interface OvertimeRequestRow {
   cancelledAt: string | null;
   workCompleted: boolean;
   workCompletedAt: string | null;
-  /** "DEVICE" (matched a real OVERTIME_IN/OVERTIME_OUT time clock punch
-   * pair) or "MANUAL" (HR override). Null until workCompleted. */
-  completionSource: "DEVICE" | "MANUAL" | null;
+  /** "STAFF_REPORTED" (the staff member reported the actual time worked —
+   * the normal path), "DEVICE" (matched a real OVERTIME_IN/OVERTIME_OUT
+   * time clock punch pair), or "MANUAL" (HR override). Null until workCompleted. */
+  completionSource: "STAFF_REPORTED" | "DEVICE" | "MANUAL" | null;
   completionNote: string | null;
   createdAt: string;
   staff?: { fullName: string; staffId: string };
   hodReviewer?: { fullName: string } | null;
   hrReviewer?: { fullName: string } | null;
+  /** The supervisor the staff member picked at submission to review this
+   * request — see the backend's submitRequest()/listSupervisors(). Null for
+   * requests submitted before this existed, and for assignTask requests. */
+  selectedSupervisorId?: string | null;
+  selectedSupervisor?: { fullName: string } | null;
   /** Set when a supervisor created this task directly for the staff member
    * (already pre-approved), rather than the staff member requesting it
    * themselves — see the backend's assignTask(). */
@@ -83,9 +89,20 @@ export interface LedgerRow {
   cost: number | null;
 }
 
+export interface SupervisorOption {
+  id: string;
+  fullName: string;
+  staffId: string;
+  designation: string;
+}
+
 export const overtimeApi = {
-  submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string }) =>
+  submit: (input: { date: string; timeIn: string; timeOut: string; reason: string; notes?: string; supervisorId: string }) =>
     api.post<OvertimeRequestRow>("/api/overtime", input),
+  /** Any authenticated staff member — who they can pick to review a
+   * submitted request (Staff.canSupervise or HR_ADMIN), not the full staff
+   * directory. */
+  listSupervisors: () => api.get<SupervisorOption[]>("/api/overtime/supervisors"),
   /** Supervisor-only (Staff.canSupervise or HR/Admin) — creates a
    * pre-approved task directly for someone else, skipping the normal
    * submit/approve chain. */
@@ -94,10 +111,16 @@ export const overtimeApi = {
   list: () => api.get<OvertimeRequestRow[]>("/api/overtime"),
   review: (id: string, decision: "APPROVE" | "REJECT") => api.patch(`/api/overtime/${id}`, { decision }),
   cancel: (id: string) => api.post<OvertimeRequestRow>(`/api/overtime/${id}/cancel`, {}),
-  /** HR-only. Tries the real time-clock punch pair first; pass
-   * `manual: true` (with an optional `note`) to force it when there's no
-   * device confirmation yet — throws ApiError("no_device_confirmation") if
-   * neither a punch nor `manual` is given. */
+  /** The request owner, once APPROVED — reports the actual time they
+   * worked (they can check the Attendance page for the real in/out times).
+   * The normal completion path; replaces waiting on a device-punch match. */
+  reportTime: (id: string, input: { timeIn: string; timeOut: string }) =>
+    api.post<OvertimeRequestRow>(`/api/overtime/${id}/report-time`, input),
+  /** HR-only override for when the staff member can't self-report. Tries
+   * the real time-clock punch pair first; pass `manual: true` (with an
+   * optional `note`) to force it when there's no device confirmation yet —
+   * throws ApiError("no_device_confirmation") if neither a punch nor
+   * `manual` is given. */
   complete: (id: string, options: { manual?: boolean; note?: string } = {}) =>
     api.post<OvertimeRequestRow>(`/api/overtime/${id}/complete`, options),
   setRate: (input: { departmentId: string; weekdayRate: number; weekendRate: number; holidayRate: number }) =>

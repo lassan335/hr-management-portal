@@ -3,7 +3,7 @@ import { Role } from "@hr/shared";
 import { useAuth } from "../../lib/AuthContext";
 import { ApiError } from "../../lib/api";
 import { overtimeApi } from "../../lib/overtimeApi";
-import type { OvertimeRequestRow, MonthlySummary, DashboardRow, LedgerRow } from "../../lib/overtimeApi";
+import type { OvertimeRequestRow, MonthlySummary, DashboardRow, LedgerRow, SupervisorOption } from "../../lib/overtimeApi";
 import { staffApi } from "../../lib/staffApi";
 import type { StaffSummaryRow } from "../../lib/staffApi";
 import { Badge, StatusBadge } from "../../components/ui";
@@ -12,6 +12,20 @@ const now = new Date();
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** 24-hour "HH:mm", independent of locale — what the report-time API expects. */
+function toHHmm(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function completionBadge(r: OvertimeRequestRow) {
+  if (!r.workCompleted) {
+    return r.status === "APPROVED" ? <Badge tone="slate">Not reported yet</Badge> : <Badge tone="slate">No</Badge>;
+  }
+  const label = r.completionSource === "MANUAL" ? " (HR)" : r.completionSource === "DEVICE" ? " (Device)" : "";
+  return <Badge tone="green">Yes{label}</Badge>;
 }
 
 export function OvertimePage() {
@@ -45,21 +59,28 @@ function SubmitAndList() {
   const { user } = useAuth();
   const [list, setList] = useState<OvertimeRequestRow[]>([]);
   const [canSupervise, setCanSupervise] = useState(false);
+  const [supervisors, setSupervisors] = useState<SupervisorOption[]>([]);
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
     timeIn: "15:00",
     timeOut: "17:00",
     reason: "",
+    supervisorId: "",
   });
   const [error, setError] = useState<string | null>(null);
-  const canReview = user?.role === Role.HOD || user?.role === Role.HR_ADMIN;
   const isHrAdmin = user?.role === Role.HR_ADMIN;
   // Most real staff (including the actual principal/administrators here)
-  // carry plain role STAFF — canSupervise is a separate, HR-set flag.
+  // carry plain role STAFF — canSupervise is a separate, HR-set flag, so
+  // whether someone can review a request is checked per-row (is THIS
+  // request's selectedSupervisorId me?), not a single page-wide gate. Only
+  // used here to decide whether to render the review/assign sections at
+  // all (an HOD is included for legacy department-routed requests).
   const canAssign = isHrAdmin || canSupervise;
+  const canReviewAnything = isHrAdmin || canSupervise || user?.role === Role.HOD;
 
   useEffect(() => {
     staffApi.getMe().then((me) => setCanSupervise(me.canSupervise)).catch(() => setCanSupervise(false));
+    overtimeApi.listSupervisors().then(setSupervisors).catch(() => setSupervisors([]));
   }, []);
 
   async function refresh() {
@@ -72,6 +93,10 @@ function SubmitAndList() {
 
   async function submit() {
     setError(null);
+    if (!form.supervisorId) {
+      setError("Choose a supervisor to review this request.");
+      return;
+    }
     try {
       await overtimeApi.submit(form);
       setForm({ ...form, reason: "" });
@@ -81,11 +106,26 @@ function SubmitAndList() {
     }
   }
 
-  // Staff no longer self-report completion — it's confirmed by an actual
-  // OVERTIME_IN/OVERTIME_OUT time clock punch pair once ZKTime is imported
-  // (usually automatic). This tries that first; if no punch is on file yet,
-  // it falls back to an HR manual override with a reason, for cases where
-  // the device data is missing or delayed.
+  // The normal completion path: once approved, the staff member reports
+  // the actual time they worked (see the Attendance page for the real
+  // punch times) — two prompts, pre-filled with the originally requested
+  // times, so hitting OK twice just confirms the estimate was right.
+  async function reportTime(r: OvertimeRequestRow) {
+    setError(null);
+    const timeIn = window.prompt("Actual time IN worked (24-hour HH:mm) — check the Attendance page for your real punch time:", toHHmm(r.timeIn));
+    if (timeIn === null) return;
+    const timeOut = window.prompt("Actual time OUT worked (24-hour HH:mm):", toHHmm(r.timeOut));
+    if (timeOut === null) return;
+    try {
+      await overtimeApi.reportTime(r.id, { timeIn, timeOut });
+      refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to report time");
+    }
+  }
+
+  // HR's fallback for when the staff member can't self-report — tries a
+  // real device punch first, then a manual override with a reason.
   async function markComplete(id: string) {
     setError(null);
     try {
@@ -94,7 +134,7 @@ function SubmitAndList() {
     } catch (err) {
       if (err instanceof ApiError && err.message === "no_device_confirmation") {
         const note = window.prompt(
-          "No time clock punch found for this date yet. Enter a reason to mark it complete manually (Cancel to wait for the device data instead):"
+          "No time clock punch found for this date yet. Enter a reason to mark it complete manually (Cancel to wait instead):"
         );
         if (note === null) return;
         try {
@@ -109,22 +149,30 @@ function SubmitAndList() {
     }
   }
 
-  const assignedToMe = list.filter((r) => r.assignedById);
-  const ownRequests = canReview ? list : list.filter((r) => !r.assignedById);
+  const assignedToMe = list.filter((r) => r.assignedById && r.staffId === user?.staffId);
+  const myRequests = list.filter((r) => !r.assignedById && r.staffId === user?.staffId);
+  // Anything in the list that isn't mine is here because the backend
+  // scoped it to me specifically — either I'm the selected supervisor, I'm
+  // HR_ADMIN, or (legacy requests) I'm the department HOD.
+  const pendingMyReview = list.filter((r) => r.staffId !== user?.staffId && (r.status === "PENDING_HOD" || r.status === "PENDING_HR"));
+  const awaitingCompletion = isHrAdmin
+    ? list.filter((r) => r.staffId !== user?.staffId && r.status === "APPROVED" && !r.cancelled && !r.workCompleted)
+    : [];
 
   return (
     <>
-      {!canReview && <AssignedToMeTable rows={assignedToMe} onCancelled={refresh} setError={setError} />}
+      {assignedToMe.length > 0 && <AssignedToMeTable rows={assignedToMe} onReportTime={reportTime} onCancelled={refresh} setError={setError} />}
+      {canReviewAnything && <PendingReviewTable rows={pendingMyReview} onReviewed={refresh} setError={setError} />}
+      {isHrAdmin && awaitingCompletion.length > 0 && (
+        <AwaitingCompletionTable rows={awaitingCompletion} onMarkComplete={markComplete} />
+      )}
       {canAssign && <AssignTaskForm onAssigned={refresh} />}
       <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium text-slate-700 mb-2">
-        {isHrAdmin ? "Pending & Awaiting Completion" : canReview ? "Pending Requests" : "My Pre-requested Overtime Slips"}
-      </h2>
+      <h2 className="font-medium text-slate-700 mb-2">My Pre-requested Overtime Slips</h2>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="text-left text-slate-500">
             <tr>
-              {canReview && <th className="px-2 py-1">Staff</th>}
               <th className="px-2 py-1">Date</th>
               <th className="px-2 py-1">Description</th>
               <th className="px-2 py-1">Time In</th>
@@ -132,82 +180,77 @@ function SubmitAndList() {
               <th className="px-2 py-1">Supervisor</th>
               <th className="px-2 py-1">Approved</th>
               <th className="px-2 py-1">Cancelled</th>
-              <th className="px-2 py-1">Work Completed</th>
+              <th className="px-2 py-1">Work Reported</th>
               <th className="px-2 py-1">Amount</th>
               <th className="px-2 py-1">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {ownRequests.map((r) => (
+            {myRequests.map((r) => (
               <tr key={r.id} className="border-t border-slate-100 align-top">
-                {canReview && <td className="px-2 py-1">{r.staff ? `${r.staff.fullName} (${r.staff.staffId})` : ""}</td>}
                 <td className="px-2 py-1">{r.date.slice(0, 10)}{r.isHoliday ? " (holiday)" : ""}</td>
                 <td className="px-2 py-1">{r.reason}</td>
                 <td className="px-2 py-1">{formatTime(r.timeIn)}</td>
                 <td className="px-2 py-1">{formatTime(r.timeOut)}</td>
-                <td className="px-2 py-1">{r.hodReviewer?.fullName ?? r.hrReviewer?.fullName ?? "—"}</td>
+                <td className="px-2 py-1">{r.selectedSupervisor?.fullName ?? r.hodReviewer?.fullName ?? r.hrReviewer?.fullName ?? "—"}</td>
                 <td className="px-2 py-1"><StatusBadge status={r.status} /></td>
                 <td className="px-2 py-1">{r.cancelled ? <Badge tone="red">Cancelled</Badge> : <Badge tone="slate">No</Badge>}</td>
-                <td className="px-2 py-1">
-                  {r.workCompleted ? (
-                    <Badge tone="green">Yes{r.completionSource === "MANUAL" ? " (HR)" : r.completionSource === "DEVICE" ? " (Device)" : ""}</Badge>
-                  ) : r.status === "APPROVED" ? (
-                    <Badge tone="slate">Awaiting time clock</Badge>
-                  ) : (
-                    <Badge tone="slate">No</Badge>
-                  )}
-                </td>
+                <td className="px-2 py-1">{completionBadge(r)}</td>
                 <td className="px-2 py-1">{r.estimatedCost != null ? `MVR ${r.estimatedCost}` : "—"}</td>
                 <td className="px-2 py-1 space-x-2 whitespace-nowrap">
-                  {canReview && (r.status === "PENDING_HOD" || r.status === "PENDING_HR") && (
-                    <>
-                      <button className="text-green-600 text-xs" onClick={async () => { await overtimeApi.review(r.id, "APPROVE"); refresh(); }}>Approve</button>
-                      <button className="text-red-600 text-xs" onClick={async () => { await overtimeApi.review(r.id, "REJECT"); refresh(); }}>Reject</button>
-                    </>
+                  {r.status === "APPROVED" && !r.cancelled && !r.workCompleted && (
+                    <button className="text-brand-600 text-xs" onClick={() => reportTime(r)}>Report Time Worked</button>
                   )}
-                  {isHrAdmin && r.status === "APPROVED" && !r.cancelled && !r.workCompleted && (
-                    <button className="text-brand-600 text-xs" onClick={() => markComplete(r.id)}>Mark Complete</button>
-                  )}
-                  {!canReview && !r.cancelled && !r.workCompleted && (
+                  {!r.cancelled && !r.workCompleted && (
                     <button className="text-red-600 text-xs" onClick={async () => { await overtimeApi.cancel(r.id); refresh(); }}>Cancel</button>
                   )}
                 </td>
               </tr>
             ))}
-            {ownRequests.length === 0 && (
+            {myRequests.length === 0 && (
               <tr>
-                <td colSpan={canReview ? 11 : 10} className="text-slate-400 px-2 py-2">None.</td>
+                <td colSpan={10} className="text-slate-400 px-2 py-2">None.</td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
 
-      {!canReview && (
-        <div className="flex flex-wrap gap-2 items-end border-t border-slate-100 pt-3 mt-3">
-          <label className="flex flex-col text-xs">Date
-            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
-          </label>
-          <label className="flex flex-col text-xs">Time In
-            <input type="time" value={form.timeIn} onChange={(e) => setForm({ ...form, timeIn: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
-          </label>
-          <label className="flex flex-col text-xs">Time Out
-            <input type="time" value={form.timeOut} onChange={(e) => setForm({ ...form, timeOut: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
-          </label>
-          <input placeholder="Reason / task" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-sm flex-1" />
-          <button className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md" onClick={submit}>
-            Request Overtime
-          </button>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-2 items-end border-t border-slate-100 pt-3 mt-3">
+        <label className="flex flex-col text-xs">Date
+          <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex flex-col text-xs">Time In
+          <input type="time" value={form.timeIn} onChange={(e) => setForm({ ...form, timeIn: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex flex-col text-xs">Time Out
+          <input type="time" value={form.timeOut} onChange={(e) => setForm({ ...form, timeOut: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex flex-col text-xs">Supervisor
+          <select
+            value={form.supervisorId}
+            onChange={(e) => setForm({ ...form, supervisorId: e.target.value })}
+            className="border border-slate-300 rounded-md px-2 py-1"
+          >
+            <option value="">Select…</option>
+            {supervisors.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.fullName} ({s.designation})
+              </option>
+            ))}
+          </select>
+        </label>
+        <input placeholder="Reason / task" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-sm flex-1" />
+        <button className="bg-brand-600 text-white text-sm px-3 py-1.5 rounded-md" onClick={submit}>
+          Request Overtime
+        </button>
+      </div>
       {error && <p className="text-red-600 text-xs mt-2">{error}</p>}
-      {!canReview && (
-        <p className="text-slate-400 text-xs mt-2">
-          Submit before doing the work — requests must be made within the submission window and each slot is capped at a maximum
-          continuous duration per the school's overtime policy. Once approved, punch OVERTIME IN / OVERTIME OUT on the time clock
-          when you do the work — that's what confirms it for payroll, not a button here.
-        </p>
-      )}
+      <p className="text-slate-400 text-xs mt-2">
+        Submit before doing the work — requests must be made within the submission window and each slot is capped at a maximum
+        continuous duration per the school's overtime policy. Once your selected supervisor approves it, report the actual time
+        you worked (check the Attendance page for your real punch times) — that's what goes into payroll.
+      </p>
       </div>
     </>
   );
@@ -215,10 +258,12 @@ function SubmitAndList() {
 
 function AssignedToMeTable({
   rows,
+  onReportTime,
   onCancelled,
   setError,
 }: {
   rows: OvertimeRequestRow[];
+  onReportTime: (r: OvertimeRequestRow) => void;
   onCancelled: () => void;
   setError: (msg: string | null) => void;
 }) {
@@ -235,7 +280,7 @@ function AssignedToMeTable({
               <th className="px-2 py-1">Description</th>
               <th className="px-2 py-1">Assigned By</th>
               <th className="px-2 py-1">Requested On</th>
-              <th className="px-2 py-1">Work Completed</th>
+              <th className="px-2 py-1">Work Reported</th>
               <th className="px-2 py-1">Actions</th>
             </tr>
           </thead>
@@ -248,14 +293,11 @@ function AssignedToMeTable({
                 <td className="px-2 py-1">{r.reason}</td>
                 <td className="px-2 py-1">{r.assignedBy?.fullName ?? "—"}</td>
                 <td className="px-2 py-1">{r.createdAt.slice(0, 10)}</td>
-                <td className="px-2 py-1">
-                  {r.workCompleted ? (
-                    <Badge tone="green">Yes{r.completionSource === "MANUAL" ? " (HR)" : r.completionSource === "DEVICE" ? " (Device)" : ""}</Badge>
-                  ) : (
-                    <Badge tone="slate">Awaiting time clock</Badge>
+                <td className="px-2 py-1">{completionBadge(r)}</td>
+                <td className="px-2 py-1 space-x-2 whitespace-nowrap">
+                  {!r.cancelled && !r.workCompleted && (
+                    <button className="text-brand-600 text-xs" onClick={() => onReportTime(r)}>Report Time Worked</button>
                   )}
-                </td>
-                <td className="px-2 py-1">
                   {!r.cancelled && !r.workCompleted && (
                     <button
                       className="text-red-600 text-xs"
@@ -284,9 +326,125 @@ function AssignedToMeTable({
         </table>
       </div>
       <p className="text-slate-400 text-xs mt-2">
-        Already approved by whoever assigned it — punch OVERTIME IN / OVERTIME OUT on the time clock when you do the work,
-        the same as any other slot.
+        Already approved by whoever assigned it — once you've done the work, report the actual time you worked (check the
+        Attendance page for your real punch times).
       </p>
+    </div>
+  );
+}
+
+/** Requests awaiting THIS user's approve/reject decision — the backend
+ * already scoped listRequests() to only include what's relevant to them
+ * (selected supervisor, HR_ADMIN, or a legacy department-HOD match). */
+function PendingReviewTable({
+  rows,
+  onReviewed,
+  setError,
+}: {
+  rows: OvertimeRequestRow[];
+  onReviewed: () => void;
+  setError: (msg: string | null) => void;
+}) {
+  async function decide(id: string, decision: "APPROVE" | "REJECT") {
+    try {
+      await overtimeApi.review(id, decision);
+      onReviewed();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to review request");
+    }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 className="font-medium text-slate-700 mb-2">Pending My Review</h2>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-left text-slate-500">
+            <tr>
+              <th className="px-2 py-1">Staff</th>
+              <th className="px-2 py-1">Date</th>
+              <th className="px-2 py-1">Description</th>
+              <th className="px-2 py-1">Time In</th>
+              <th className="px-2 py-1">Time Out</th>
+              <th className="px-2 py-1">Status</th>
+              <th className="px-2 py-1">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100 align-top">
+                <td className="px-2 py-1">{r.staff ? `${r.staff.fullName} (${r.staff.staffId})` : ""}</td>
+                <td className="px-2 py-1">{r.date.slice(0, 10)}{r.isHoliday ? " (holiday)" : ""}</td>
+                <td className="px-2 py-1">{r.reason}</td>
+                <td className="px-2 py-1">{formatTime(r.timeIn)}</td>
+                <td className="px-2 py-1">{formatTime(r.timeOut)}</td>
+                <td className="px-2 py-1"><StatusBadge status={r.status} /></td>
+                <td className="px-2 py-1 space-x-2 whitespace-nowrap">
+                  <button className="text-green-600 text-xs" onClick={() => decide(r.id, "APPROVE")}>Approve</button>
+                  <button className="text-red-600 text-xs" onClick={() => decide(r.id, "REJECT")}>Reject</button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-slate-400 px-2 py-2">None.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** HR_ADMIN's fallback queue — approved requests where the staff member
+ * hasn't self-reported their time yet, in case HR needs to intervene
+ * (see markComplete in the parent). */
+function AwaitingCompletionTable({
+  rows,
+  onMarkComplete,
+}: {
+  rows: OvertimeRequestRow[];
+  onMarkComplete: (id: string) => void;
+}) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 className="font-medium text-slate-700 mb-2">Awaiting Completion (HR override)</h2>
+      <p className="text-xs text-slate-400 mb-2">
+        Approved requests the staff member hasn't reported their actual time for yet. Normally they'll do this themselves —
+        use this only if they can't.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-left text-slate-500">
+            <tr>
+              <th className="px-2 py-1">Staff</th>
+              <th className="px-2 py-1">Date</th>
+              <th className="px-2 py-1">Description</th>
+              <th className="px-2 py-1">Requested Time</th>
+              <th className="px-2 py-1">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100 align-top">
+                <td className="px-2 py-1">{r.staff ? `${r.staff.fullName} (${r.staff.staffId})` : ""}</td>
+                <td className="px-2 py-1">{r.date.slice(0, 10)}</td>
+                <td className="px-2 py-1">{r.reason}</td>
+                <td className="px-2 py-1">{formatTime(r.timeIn)}–{formatTime(r.timeOut)}</td>
+                <td className="px-2 py-1">
+                  <button className="text-brand-600 text-xs" onClick={() => onMarkComplete(r.id)}>Mark Complete</button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={5} className="text-slate-400 px-2 py-2">None.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

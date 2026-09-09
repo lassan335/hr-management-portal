@@ -4,20 +4,40 @@ import { z } from "zod";
 // matches the legacy portal's separate Date / Time In / Time Out fields.
 const timeString = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "expected HH:mm");
 
-export const overtimeRequestSchema = z.object({
+// Shared by both a self-submitted request and a supervisor-assigned task —
+// no isHoliday field: whether Government/Public Holiday rates apply is
+// derived server-side from the real academic calendar (see
+// overtime/service.ts's submitRequest/assignTask), not a client checkbox.
+const otSlotFields = {
   date: z.coerce.date(),
   timeIn: timeString,
   timeOut: timeString,
   reason: z.string().min(1),
   notes: z.string().optional(),
-  // No isHoliday field here — whether Government/Public Holiday rates apply
-  // is derived server-side from the real academic calendar (see
-  // overtime/service.ts's submitRequest/assignTask), not a client checkbox.
+};
+
+export const overtimeRequestSchema = z.object({
+  ...otSlotFields,
+  // The staff member picks who reviews this request — see
+  // overtime/service.ts's submitRequest for eligibility (Staff.canSupervise
+  // or HR_ADMIN). Required: a self-submitted request must always name a
+  // reviewer, matching the "send OT request for selected supervisor" flow.
+  supervisorId: z.string().min(1),
 });
 
-// A supervisor assigning a task directly to someone else — same shape as a
-// self-submitted request, plus which staff member it's for.
-export const assignOvertimeSchema = overtimeRequestSchema.extend({
+// After approval, the staff member reports the actual time they worked
+// (see overtime/service.ts's reportOvertimeCompletion) — replaces waiting
+// on a device-punch match as the normal completion path.
+export const reportCompletionSchema = z.object({
+  timeIn: timeString,
+  timeOut: timeString,
+});
+
+// A supervisor assigning a task directly to someone else — no supervisorId
+// here: the actor doing the assigning already IS the reviewer, so the task
+// is pre-approved and never goes through the review step at all.
+export const assignOvertimeSchema = z.object({
+  ...otSlotFields,
   staffId: z.string().min(1),
 });
 

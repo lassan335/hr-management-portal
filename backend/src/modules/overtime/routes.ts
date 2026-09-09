@@ -1,10 +1,20 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { Role } from "@hr/shared";
 import { authenticate } from "../../lib/auth";
-import { requireRole } from "../../lib/rbac";
+import { requireRole, requireRoleOrSupervisor } from "../../lib/rbac";
 import { requestMeta } from "../../lib/audit";
 import * as service from "./service";
-import { overtimeRequestSchema, assignOvertimeSchema, reviewSchema, rateSchema, summaryQuerySchema, dashboardQuerySchema, reportQuerySchema, completeWorkSchema } from "./validation";
+import {
+  overtimeRequestSchema,
+  assignOvertimeSchema,
+  reviewSchema,
+  rateSchema,
+  summaryQuerySchema,
+  dashboardQuerySchema,
+  reportQuerySchema,
+  completeWorkSchema,
+  reportCompletionSchema,
+} from "./validation";
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void | Response>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -36,6 +46,16 @@ export function overtimeRouter(): Router {
     })
   );
 
+  // Any authenticated staff member — picking a reviewer at submission is a
+  // self-service step, not gated behind canSupervise/HOD/HR_ADMIN like the
+  // full staff directory (GET /api/staff).
+  router.get(
+    "/supervisors",
+    asyncHandler(async (req, res) => {
+      res.json(await service.listSupervisors(req.user!));
+    })
+  );
+
   // Fine-grained authorization (Staff.canSupervise, independent of `role`)
   // happens inside the service — most real staff, including the actual
   // principal/admins, currently carry plain role STAFF.
@@ -47,9 +67,14 @@ export function overtimeRouter(): Router {
     })
   );
 
+  // Staff.canSupervise (independent of `role`) must be let through here too
+  // now — a self-submitted request's reviewer is whichever supervisor the
+  // staff member picked (see submitRequest/listSupervisors), who very often
+  // carries plain role STAFF. Fine-grained checks (must be the SPECIFIC
+  // selected supervisor, or HR_ADMIN) happen inside reviewRequest.
   router.patch(
     "/:id",
-    requireRole(Role.HOD, Role.HR_ADMIN),
+    requireRoleOrSupervisor(Role.HOD, Role.HR_ADMIN),
     asyncHandler(async (req, res) => {
       const { decision } = reviewSchema.parse(req.body);
       res.json(await service.reviewRequest(req.user!, String(req.params.id), decision, requestMeta(req)));
@@ -60,6 +85,17 @@ export function overtimeRouter(): Router {
     "/:id/cancel",
     asyncHandler(async (req, res) => {
       res.json(await service.cancelRequest(req.user!, String(req.params.id), requestMeta(req)));
+    })
+  );
+
+  // The request owner reports the actual time they worked, once approved —
+  // the normal completion path (see reportOvertimeCompletion's doc comment).
+  // Ownership is checked inside the service, not here.
+  router.post(
+    "/:id/report-time",
+    asyncHandler(async (req, res) => {
+      const input = reportCompletionSchema.parse(req.body);
+      res.json(await service.reportOvertimeCompletion(req.user!, String(req.params.id), input, requestMeta(req)));
     })
   );
 

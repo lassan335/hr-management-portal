@@ -217,6 +217,7 @@ model Staff {
   overtimeHodReviews OvertimeRequest[] @relation("OvertimeHodReviewer")
   overtimeHrReviews  OvertimeRequest[] @relation("OvertimeHrReviewer")
   overtimeAssigned   OvertimeRequest[] @relation("OvertimeAssignedBy")
+  overtimeSelectedAsSupervisor OvertimeRequest[] @relation("OvertimeSelectedSupervisor")
 
   timeEntries        TimeEntry[]
   attendanceDevice   AttendanceDevice?
@@ -363,6 +364,16 @@ model OvertimeRequest {
   isHoliday Boolean  @default(false)
 
   status        ApprovalStatus @default(PENDING_HOD)
+  /// The specific supervisor the staff member chose to review this request
+  /// at submission (see submitRequest) — any Staff.canSupervise=true person,
+  /// or HR_ADMIN. Replaces automatic department/HOD-based routing for
+  /// self-submitted overtime requests specifically; only this person (or
+  /// HR_ADMIN) may approve/reject, and approval goes straight to APPROVED
+  /// (single stage, no separate HR sign-off after). Null for requests
+  /// submitted before this existed, which still use the old HOD->HR chain,
+  /// and for assignTask-created requests (already APPROVED, never reviewed).
+  selectedSupervisorId String?
+  selectedSupervisor   Staff?  @relation("OvertimeSelectedSupervisor", fields: [selectedSupervisorId], references: [id])
   hodReviewerId String?
   hodReviewer   Staff?         @relation("OvertimeHodReviewer", fields: [hodReviewerId], references: [id])
   hodReviewedAt DateTime?
@@ -389,8 +400,10 @@ model OvertimeRequest {
   /// count for payroll.
   workCompleted   Boolean   @default(false)
   workCompletedAt DateTime?
-  /// "DEVICE" (matched a real time-clock punch pair) or "MANUAL" (HR
-  /// override, used when device data is missing/delayed). Null until
+  /// "STAFF_REPORTED" (the staff themselves enters the actual time worked
+  /// once approved — the normal path, see reportOvertimeCompletion),
+  /// "DEVICE" (matched a real time-clock punch pair), or "MANUAL" (HR
+  /// override, used when neither of the above happened). Null until
   /// completed.
   completionSource String?
   /// HR's reason for a manual override — only meaningful when

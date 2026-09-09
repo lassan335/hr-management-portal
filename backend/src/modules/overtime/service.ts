@@ -144,12 +144,35 @@ function resolveOtSlot(input: { date: Date; timeIn: string; timeOut: string }): 
   return { timeIn, timeOut };
 }
 
+/** Staff eligible to be picked as a request's reviewer — Staff.canSupervise,
+ * or HR_ADMIN. Shared by submitRequest's validation and the /supervisors
+ * listing endpoint so they never drift apart. */
+async function isEligibleSupervisor(staffId: string): Promise<boolean> {
+  const staff = await prisma.staff.findUnique({ where: { id: staffId }, select: { canSupervise: true, role: true } });
+  return !!staff && (staff.canSupervise || staff.role === Role.HR_ADMIN);
+}
+
+/** Any authenticated staff member can call this — picking a reviewer at
+ * submission time is a self-service step, not something gated behind
+ * canSupervise/HOD/HR_ADMIN like the full staff directory (listStaff). */
+export async function listSupervisors(actor: AuthUser) {
+  const staff = await prisma.staff.findMany({
+    where: { status: "ACTIVE", OR: [{ canSupervise: true }, { role: Role.HR_ADMIN }], id: { not: actor.staffId } },
+    select: { id: true, fullName: true, staffId: true, designation: true },
+    orderBy: { fullName: "asc" },
+  });
+  return staff;
+}
+
 export async function submitRequest(
   actor: AuthUser,
   input: z.infer<typeof overtimeRequestSchema>,
   meta: AuditMeta = {}
 ) {
   const { timeIn, timeOut } = resolveOtSlot(input);
+
+  if (input.supervisorId === actor.staffId) throw new HttpError(400, "cannot_select_self");
+  if (!(await isEligibleSupervisor(input.supervisorId))) throw new HttpError(400, "invalid_supervisor");
 
   // Derived from the real calendar, not the client's checkbox — the OT rate
   // (elevated for a Public Holiday, same as normal for Government/weekday)
@@ -167,6 +190,7 @@ export async function submitRequest(
       reason: input.reason,
       notes: input.notes,
       isHoliday,
+      selectedSupervisorId: input.supervisorId,
     },
   });
   await recordAudit({
@@ -174,13 +198,18 @@ export async function submitRequest(
     action: "OVERTIME_SUBMITTED",
     entity: "OvertimeRequest",
     entityId: request.id,
-    after: { date: input.date, timeIn: input.timeIn, timeOut: input.timeOut },
+    after: { date: input.date, timeIn: input.timeIn, timeOut: input.timeOut, supervisorId: input.supervisorId },
     ...meta,
   });
   await notify({
     staffId: actor.staffId,
     type: NotificationType.OVERTIME_SUBMITTED,
     message: `Overtime request submitted for ${input.date.toISOString().slice(0, 10)}, ${input.timeIn}–${input.timeOut}.`,
+  });
+  await notify({
+    staffId: input.supervisorId,
+    type: NotificationType.OVERTIME_SUBMITTED,
+    message: `${actor.fullName} submitted an overtime request for ${input.date.toISOString().slice(0, 10)}, ${input.timeIn}–${input.timeOut}, for your review.`,
   });
   return request;
 }
@@ -251,20 +280,31 @@ export async function listRequests(requester: AuthUser) {
       orderBy: { createdAt: "asc" },
       include: { staff: { select: { fullName: true, staffId: true, departmentId: true } }, assignedBy: { select: { fullName: true } } },
     });
-  } else if (requester.role === Role.HOD) {
-    requests = await prisma.overtimeRequest.findMany({
-      where: { status: "PENDING_HOD", cancelled: false, staff: { departmentId: requester.departmentId ?? "__none__" } },
-      orderBy: { createdAt: "asc" },
-      include: { staff: { select: { fullName: true, staffId: true, departmentId: true } }, assignedBy: { select: { fullName: true } } },
-    });
   } else {
+    // Everyone else — including a HOD, and a plain-role-STAFF supervisor
+    // (most real supervisors carry plain STAFF, see Staff.canSupervise) —
+    // sees their own submitted requests, plus anything actually pending
+    // THEIR review: either a staff member specifically picked them as
+    // reviewer (see submitRequest/listSupervisors), or (HOD only, legacy
+    // requests submitted before that existed) it's in their department.
     requests = await prisma.overtimeRequest.findMany({
-      where: { staffId: requester.staffId },
+      where: {
+        cancelled: false,
+        OR: [
+          { staffId: requester.staffId },
+          { status: "PENDING_HOD", selectedSupervisorId: requester.staffId },
+          ...(requester.role === Role.HOD
+            ? [{ status: "PENDING_HOD" as const, selectedSupervisorId: null, staff: { departmentId: requester.departmentId ?? "__none__" } }]
+            : []),
+        ],
+      },
       orderBy: { createdAt: "desc" },
       include: {
+        staff: { select: { fullName: true, staffId: true, departmentId: true } },
         hodReviewer: { select: { fullName: true } },
         hrReviewer: { select: { fullName: true } },
         assignedBy: { select: { fullName: true } },
+        selectedSupervisor: { select: { fullName: true } },
       },
     });
   }
@@ -302,24 +342,42 @@ export async function reviewRequest(
   if (!request) throw new HttpError(404, "not_found");
   if (request.cancelled) throw new HttpError(409, "request_cancelled");
 
-  const newStatus = nextApprovalStatus({
-    current: request.status as any,
-    reviewer: actor,
-    requestDepartmentId: request.staff.departmentId,
-    requestOwnerStaffId: request.staffId,
-    decision,
-  });
+  let newStatus: "PENDING_HOD" | "PENDING_HR" | "APPROVED" | "REJECTED";
+  let updateData: Record<string, unknown>;
 
-  const isHodStage = request.status === "PENDING_HOD";
-  const updated = await prisma.overtimeRequest.update({
-    where: { id: requestId },
-    data:
+  if (request.selectedSupervisorId) {
+    // Single-stage: only the supervisor the staff member picked at
+    // submission (or HR_ADMIN, as a fallback) may decide — see
+    // submitRequest/listSupervisors. Approval goes straight to APPROVED,
+    // no separate HOD-then-HR chain.
+    if (actor.staffId === request.staffId) throw new HttpError(403, "cannot_review_own_request");
+    const canReview = actor.staffId === request.selectedSupervisorId || actor.role === Role.HR_ADMIN;
+    if (!canReview) throw new HttpError(403, "forbidden");
+    if (request.status !== "PENDING_HOD") throw new HttpError(409, "already_reviewed");
+
+    newStatus = decision === "APPROVE" ? "APPROVED" : "REJECTED";
+    updateData = { status: newStatus, hodReviewerId: actor.staffId, hodReviewedAt: new Date() };
+  } else {
+    // Legacy requests submitted before supervisor selection existed — keep
+    // the old department HOD -> HR chain so nothing already in flight gets stranded.
+    newStatus = nextApprovalStatus({
+      current: request.status as any,
+      reviewer: actor,
+      requestDepartmentId: request.staff.departmentId,
+      requestOwnerStaffId: request.staffId,
+      decision,
+    });
+
+    const isHodStage = request.status === "PENDING_HOD";
+    updateData =
       newStatus === "PENDING_HR"
         ? { status: newStatus, hodReviewerId: actor.staffId, hodReviewedAt: new Date() }
         : isHodStage
           ? { status: newStatus, hodReviewerId: actor.staffId, hodReviewedAt: new Date(), hrReviewerId: actor.role === Role.HR_ADMIN ? actor.staffId : undefined, hrReviewedAt: actor.role === Role.HR_ADMIN ? new Date() : undefined }
-          : { status: newStatus, hrReviewerId: actor.staffId, hrReviewedAt: new Date() },
-  });
+          : { status: newStatus, hrReviewerId: actor.staffId, hrReviewedAt: new Date() };
+  }
+
+  const updated = await prisma.overtimeRequest.update({ where: { id: requestId }, data: updateData });
 
   if (newStatus === "APPROVED" || newStatus === "REJECTED") {
     await recordAudit({
@@ -422,14 +480,21 @@ async function markWorkCompleted(
   requestId: string,
   staffId: string,
   requestDate: Date,
-  completionSource: "DEVICE" | "MANUAL",
+  completionSource: "STAFF_REPORTED" | "DEVICE" | "MANUAL",
   completionNote: string | null,
   actorId: string,
-  meta: AuditMeta = {}
+  meta: AuditMeta = {},
+  times?: { timeIn: Date; timeOut: Date }
 ) {
   const updated = await prisma.overtimeRequest.update({
     where: { id: requestId },
-    data: { workCompleted: true, workCompletedAt: new Date(), completionSource, completionNote },
+    data: {
+      workCompleted: true,
+      workCompletedAt: new Date(),
+      completionSource,
+      completionNote,
+      ...(times ? { timeIn: times.timeIn, timeOut: times.timeOut } : {}),
+    },
   });
   await recordAudit({
     actorId,
@@ -443,11 +508,49 @@ async function markWorkCompleted(
     staffId,
     type: NotificationType.OVERTIME_WORK_COMPLETED,
     message:
-      completionSource === "DEVICE"
-        ? `Your overtime for ${requestDate.toISOString().slice(0, 10)} was confirmed by the time clock and will be included in payroll.`
-        : `Your overtime for ${requestDate.toISOString().slice(0, 10)} was marked complete by HR.`,
+      completionSource === "STAFF_REPORTED"
+        ? `Your overtime for ${requestDate.toISOString().slice(0, 10)} was recorded and will be included in payroll.`
+        : completionSource === "DEVICE"
+          ? `Your overtime for ${requestDate.toISOString().slice(0, 10)} was confirmed by the time clock and will be included in payroll.`
+          : `Your overtime for ${requestDate.toISOString().slice(0, 10)} was marked complete by HR.`,
   });
   return updated;
+}
+
+/**
+ * The normal completion path: once a request is APPROVED, the staff member
+ * who owns it reports the actual time they worked (they can see their own
+ * real attendance on the Attendance page to get this right) — replaces
+ * waiting on a device-punch match, whose Break/OT classification is only
+ * validated to ~86% accuracy (see zktimeDevicePoll.ts). Overwrites the
+ * request's original (requested/estimated) timeIn/timeOut with the actual
+ * worked time, since that's what payroll (monthlySummary, overtimeReport)
+ * reads. Duration is still capped at otMaxContinuousMinutes, same as at
+ * submission — but NOT re-checked against the submission window, since
+ * completion can legitimately happen days after the original request date.
+ */
+export async function reportOvertimeCompletion(
+  actor: AuthUser,
+  requestId: string,
+  input: { timeIn: string; timeOut: string },
+  meta: AuditMeta = {}
+) {
+  const request = await prisma.overtimeRequest.findUnique({ where: { id: requestId } });
+  if (!request) throw new HttpError(404, "not_found");
+  if (request.staffId !== actor.staffId) throw new HttpError(403, "forbidden");
+  if (request.cancelled) throw new HttpError(409, "request_cancelled");
+  if (request.status !== "APPROVED") throw new HttpError(409, "not_approved");
+  if (request.workCompleted) throw new HttpError(409, "already_completed");
+
+  const timeIn = combineDateAndTime(request.date, input.timeIn);
+  let timeOut = combineDateAndTime(request.date, input.timeOut);
+  if (timeOut <= timeIn) timeOut = new Date(timeOut.getTime() + 24 * 3600000); // crosses midnight
+  const durationMinutes = (timeOut.getTime() - timeIn.getTime()) / 60000;
+  if (durationMinutes > env.otMaxContinuousMinutes) {
+    throw new HttpError(400, `duration_exceeds_max:${env.otMaxContinuousMinutes}min`);
+  }
+
+  return markWorkCompleted(request.id, request.staffId, request.date, "STAFF_REPORTED", null, actor.staffId, meta, { timeIn, timeOut });
 }
 
 /** Auto-completion hook, called after a ZKTime import brings in new
@@ -474,17 +577,13 @@ export async function reconcileOvertimeCompletion(staffId: string, date: Date): 
 }
 
 /**
- * Marks an approved OT request "Work Completed" — HR-only. First tries to
- * confirm it against a real OVERTIME_IN/OVERTIME_OUT punch pair from the
- * time clock (the normal path — usually already done automatically by
- * reconcileOvertimeCompletion right after the relevant ZKTime import, this
- * is the on-demand equivalent for requests approved *after* the import
- * already ran). If no device confirmation exists yet, HR can force it with
- * `manual: true` (device offline, staff forgot to punch, etc.) — recorded
- * as completionSource "MANUAL" with the given note for audit purposes.
- * Staff can no longer self-report completion — only a real punch or an
- * explicit HR override counts. Payroll totals only count requests that
- * reach this state, not merely "approved". */
+ * HR's override for completing an approved OT request without the staff
+ * member's own self-report (reportOvertimeCompletion is the normal path —
+ * see that function). Tries a real OVERTIME_IN/OVERTIME_OUT device-punch
+ * match first; if none exists, HR can force it with `manual: true` (staff
+ * unavailable, device offline, etc.), recorded as completionSource "MANUAL"
+ * with the given note for audit purposes. Payroll totals only count
+ * requests that reach this state, not merely "approved". */
 export async function completeWork(
   actor: AuthUser,
   requestId: string,

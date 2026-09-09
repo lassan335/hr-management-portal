@@ -37,20 +37,20 @@ export function Layout() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col transition-transform duration-200 md:static md:translate-x-0 md:shrink-0 ${
+        className={`fixed inset-y-0 left-0 z-40 w-64 bg-brand-800 dark:bg-brand-900 flex flex-col transition-transform duration-200 md:static md:translate-x-0 md:shrink-0 ${
           drawerOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex items-center gap-2 px-4 py-4">
-          <img src={logo} alt="Kinbidhoo School" className="h-10 w-10 object-contain shrink-0" />
+          <img src={logo} alt="Kinbidhoo School" className="h-10 w-10 object-contain shrink-0 rounded-md bg-white p-0.5" />
           <div className="min-w-0 flex-1">
-            <p className="font-semibold text-brand-700 dark:text-brand-400 leading-tight truncate">Kinbidhoo School</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">HR Portal</p>
+            <p className="font-semibold text-white leading-tight truncate">Kinbidhoo School</p>
+            <p className="text-xs text-brand-200 leading-tight">HR Portal</p>
           </div>
           <button
             aria-label="Close menu"
             onClick={() => setDrawerOpen(false)}
-            className="md:hidden text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+            className="md:hidden text-brand-200 hover:text-white"
           >
             <X className="h-5 w-5" />
           </button>
@@ -67,8 +67,8 @@ export function Layout() {
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
                     isActive
-                      ? "bg-brand-50 dark:bg-slate-800 text-brand-700 dark:text-white"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60"
+                      ? "bg-white/15 text-white"
+                      : "text-brand-100 hover:bg-white/10 hover:text-white"
                   }`
                 }
               >
@@ -78,18 +78,18 @@ export function Layout() {
             );
           })}
         </nav>
-        <div className="px-4 py-4 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
-          <div className="h-8 w-8 rounded-full bg-brand-600 text-white text-xs font-semibold flex items-center justify-center shrink-0">
+        <div className="px-4 py-4 border-t border-white/10 flex items-center gap-2">
+          <div className="h-8 w-8 rounded-full bg-white text-brand-700 text-xs font-semibold flex items-center justify-center shrink-0">
             {user ? initials(user.fullName) : ""}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{user?.fullName}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{user?.role}</p>
+            <p className="text-sm font-medium text-white truncate">{user?.fullName}</p>
+            <p className="text-xs text-brand-200">{user?.role}</p>
           </div>
           <button
             onClick={() => logout()}
             title="Sign out"
-            className="text-slate-400 hover:text-red-600 dark:hover:text-red-400 shrink-0"
+            className="text-brand-200 hover:text-red-300 shrink-0"
           >
             <LogOut className="h-4 w-4" />
           </button>

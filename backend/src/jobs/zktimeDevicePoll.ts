@@ -13,60 +13,106 @@ import { importDevicePunchesBatched, ParsedPunch } from "./zktimeImport";
  * importDevicePunchesBatched skips punches already recorded from an earlier
  * poll instead of re-inserting them every time.
  *
- * Direction/type is inferred from position within each device+day's
- * chronological sequence, the same way the real ZKTime 5.0 software's own
- * "Schedule Class" mechanism works (confirmed by reading its shipped SQL
- * schema — its raw punch table is *also* just a 2-state In/Out flag; Break
- * detection there is a calculated gap between sessions, not a device-
- * reported type either): the first punch of the day opens it (CHECK_IN),
- * the last one closes it (CHECK_OUT), and any punches in between are the
- * boundaries of a break (BREAK_OUT/BREAK_IN, alternating). A day with only
- * 2 punches behaves exactly as before (CHECK_IN, CHECK_OUT); a day with an
- * odd punch count ends on a BREAK_IN with no closing CHECK_OUT, correctly
- * surfacing as missingCheckout rather than being guessed at.
- *
  * A 2026-09-09 investigation tried reading a byte at offset 31 of the raw
  * 40-byte attendance record, believing it to be a genuine device-reported
  * punch-type code (it does vary 0-5 across real records). Cross-checked
  * against an authoritative ZKTime 5.0 "State" export for the same day, that
  * byte disagreed with the real Check/Break/OT classification on ~45% of
  * staff — the real classification is evidently computed by the desktop
- * software's own session/schedule logic (matching this doc comment's
- * original finding), not read from a fixed byte position. Do not
- * reintroduce that approach without validating it against a real export
- * like that one first — see git history around 2026-09-09 for the full
- * investigation and the revert.
+ * software's own session/schedule logic, not read from a fixed byte
+ * position. Do not reintroduce raw-byte decoding without validating it
+ * against a real export first.
+ *
+ * The session/schedule model below replaced a purely positional guess
+ * (first punch of the day = Check In, last = Check Out, everything between
+ * alternates as Break) after the school confirmed its real shift windows:
+ * Check In 6:00-8:00am, Check Out ~12:45pm, Overtime spans from Check Out
+ * through the next Check In (so a late OT session that runs past midnight
+ * correctly continues into the small hours rather than resetting at the
+ * calendar-day boundary). Validated against the same 8 September export at
+ * ~89% punch-level accuracy (up from ~55% for the old positional guess) —
+ * the remaining gap is mostly a same-day back-to-back-break cooldown rule
+ * and duplicate/glitch taps (two taps at the same minute) this model
+ * doesn't attempt to replicate; see git history around 2026-09-09 for the
+ * validation script and results. Re-validate against a fresh export before
+ * changing this again.
  */
-function toAlternatingPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
+type SessionState = "BEFORE_CHECKIN" | "IN_SESSION" | "IN_OT_WINDOW";
+
+function minutesOfDay(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+const CHECKIN_WINDOW_START = minutesOfDay(env.zktimeDevice.checkinWindowStart);
+const CHECKIN_WINDOW_END = minutesOfDay(env.zktimeDevice.checkinWindowEnd);
+const CHECKOUT_THRESHOLD = minutesOfDay(env.zktimeDevice.checkoutTime);
+
+function toSessionPunches(logs: ZKAttendanceRecord[]): ParsedPunch[] {
   const sorted = logs
     // The device pads its log buffer with empty/sentinel rows
     // (deviceUserId: "", recordTime at its zero-date) — skip those.
     .filter((log) => log.deviceUserId && !isNaN(log.recordTime?.getTime?.()))
     .sort((a, b) => a.recordTime.getTime() - b.recordTime.getTime());
 
-  const dayGroups = new Map<string, ZKAttendanceRecord[]>();
+  const byDevice = new Map<string, ZKAttendanceRecord[]>();
   for (const log of sorted) {
-    const dayKey = `${log.deviceUserId}:${log.recordTime.toISOString().slice(0, 10)}`;
-    if (!dayGroups.has(dayKey)) dayGroups.set(dayKey, []);
-    dayGroups.get(dayKey)!.push(log);
+    if (!byDevice.has(log.deviceUserId)) byDevice.set(log.deviceUserId, []);
+    byDevice.get(log.deviceUserId)!.push(log);
   }
 
   const punches: ParsedPunch[] = [];
-  for (const group of dayGroups.values()) {
-    group.forEach((log, i) => {
-      const isLast = i === group.length - 1;
+  for (const logsForDevice of byDevice.values()) {
+    // Per-device-user state carries across the whole chronological run, not
+    // reset at midnight — an OT session opened before midnight and closed
+    // just after it must stay OT, not get reinterpreted as a new day.
+    let state: SessionState = "BEFORE_CHECKIN";
+    let onBreak = false;
+    let otOpen = false;
+
+    for (const log of logsForDevice) {
+      const mins = log.recordTime.getHours() * 60 + log.recordTime.getMinutes();
+      const inCheckinWindow = mins >= CHECKIN_WINDOW_START && mins < CHECKIN_WINDOW_END;
       let punchType: PunchType;
-      if (i === 0) {
+
+      if (state === "BEFORE_CHECKIN") {
         punchType = PunchType.CHECK_IN;
-      } else if (i % 2 === 1) {
-        // An "out" position — closes the day if nothing follows, otherwise opens a break.
-        punchType = isLast ? PunchType.CHECK_OUT : PunchType.BREAK_OUT;
+        state = "IN_SESSION";
+        onBreak = false;
+      } else if (state === "IN_SESSION") {
+        if (!onBreak) {
+          if (mins >= CHECKOUT_THRESHOLD) {
+            punchType = PunchType.CHECK_OUT;
+            state = "IN_OT_WINDOW";
+            otOpen = false;
+          } else {
+            punchType = PunchType.BREAK_OUT;
+            onBreak = true;
+          }
+        } else {
+          punchType = PunchType.BREAK_IN;
+          onBreak = false;
+        }
       } else {
-        // An "in" position after the first punch is always a return from break.
-        punchType = PunchType.BREAK_IN;
+        // IN_OT_WINDOW — a punch inside the Check-In window starts a fresh
+        // day even if an OT pair from the previous session never closed
+        // (matches the real export: an unclosed OT pair simply never gets
+        // its Out tap rather than blocking the next day's Check In).
+        if (inCheckinWindow && !otOpen) {
+          punchType = PunchType.CHECK_IN;
+          state = "IN_SESSION";
+          onBreak = false;
+        } else if (!otOpen) {
+          punchType = PunchType.OVERTIME_IN;
+          otOpen = true;
+        } else {
+          punchType = PunchType.OVERTIME_OUT;
+          otOpen = false;
+        }
       }
+
       punches.push({ deviceUserId: log.deviceUserId, timestamp: log.recordTime, punchType });
-    });
+    }
   }
   return punches;
 }
@@ -80,7 +126,7 @@ async function pollOnce() {
   try {
     await zk.createSocket();
     const { data: logs } = await zk.getAttendances();
-    const punches = toAlternatingPunches(logs);
+    const punches = toSessionPunches(logs);
     if (punches.length === 0) {
       console.log(`[zktime-device] Polled ${env.zktimeDevice.ip}: no punches on device.`);
       return;

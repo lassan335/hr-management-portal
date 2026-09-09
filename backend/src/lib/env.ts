@@ -57,6 +57,17 @@ export const env = {
     port: Number(process.env.ZKTIME_DEVICE_PORT ?? 4370),
     pollIntervalMinutes: Number(process.env.ZKTIME_DEVICE_POLL_INTERVAL_MINUTES ?? 5),
     enabled: Boolean(process.env.ZKTIME_DEVICE_IP) && process.env.ZKTIME_DEVICE_ENABLED !== "false",
+    // Session-based Check/Break/OT classification for raw device punches
+    // (see zktimeDevicePoll.ts's toSessionPunches) — validated against a
+    // real ZKTime 5.0 "State" export for 8 September 2026 at ~89% punch-
+    // level accuracy. The first punch of the day is always Check In; any
+    // "out" punch inside [checkinWindowStart, checkinWindowEnd) starts a
+    // fresh day even mid-OT-window; any "out" punch at/after checkoutTime
+    // closes the day (Check Out) rather than opening another break;
+    // everything after that alternates as Overtime until the next Check In.
+    checkinWindowStart: process.env.ZKTIME_CHECKIN_WINDOW_START ?? "06:00",
+    checkinWindowEnd: process.env.ZKTIME_CHECKIN_WINDOW_END ?? "08:00",
+    checkoutTime: process.env.ZKTIME_CHECKOUT_TIME ?? "12:45",
   },
 
   // Fallback shift window for staff not assigned to a StaffGroup — real
